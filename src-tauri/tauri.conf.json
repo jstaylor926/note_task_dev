@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "Cortex",
+  "version": "0.1.0",
+  "identifier": "com.cortex.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Cortex",
+        "width": 1400,
+        "height": 900,
+        "resizable": true,
+        "decorations": true
+      }
+    ],
+    "security": {}
+  }
+}
