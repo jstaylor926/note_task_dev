@@ -1,5 +1,10 @@
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
+use tauri::AppHandle;
+use crate::ingest;
+use crate::AppState;
+use tauri::Manager;
 
 pub fn create_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -7,6 +12,49 @@ pub fn create_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::
     let watcher = RecommendedWatcher::new(tx, Config::default())?;
 
     Ok((watcher, rx))
+}
+
+pub async fn start_watcher(app_handle: AppHandle, watch_path: PathBuf) {
+    let (mut watcher, rx) = match create_watcher() {
+        Ok(w) => w,
+        Err(e) => {
+            log::error!("Failed to create watcher: {}", e);
+            return;
+        }
+    };
+
+    if let Err(e) = watcher.watch(&watch_path, RecursiveMode::Recursive) {
+        log::error!("Failed to watch path {:?}: {}", watch_path, e);
+        return;
+    }
+
+    log::info!("Started watching {:?}", watch_path);
+
+    // Keep watcher alive by moving it into the task
+    let _watcher = watcher;
+
+    while let Ok(event) = rx.recv() {
+        match event {
+            Ok(event) => {
+                if event.kind.is_modify() || event.kind.is_create() {
+                    for path in event.paths {
+                        let app_handle = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let state = app_handle.state::<AppState>();
+                            let sidecar_url = state.sidecar_url.clone();
+                            
+                            if let Err(e) = ingest::process_file(&path, &sidecar_url).await {
+                                log::error!("Failed to process file {:?}: {}", path, e);
+                            } else {
+                                log::info!("Processed file {:?}", path);
+                            }
+                        });
+                    }
+                }
+            }
+            Err(e) => log::error!("Watcher error: {}", e),
+        }
+    }
 }
 
 #[cfg(test)]

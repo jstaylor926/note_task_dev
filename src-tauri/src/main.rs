@@ -5,6 +5,7 @@ mod commands;
 mod db;
 mod sidecar;
 mod watcher;
+mod ingest;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -73,8 +74,15 @@ fn main() {
             // 6. Start background health monitor
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(sidecar::health_monitor_loop(
-                app_handle,
+                app_handle.clone(),
                 sidecar_url,
+            ));
+
+            // 7. Start file watcher on project root
+            let project_root = std::env::current_dir().expect("failed to get current dir");
+            tauri::async_runtime::spawn(watcher::start_watcher(
+                app_handle,
+                project_root,
             ));
 
             Ok(())
