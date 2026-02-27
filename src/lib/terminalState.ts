@@ -136,6 +136,16 @@ export function createTerminalStore() {
     );
   }
 
+  function resizeSplit(splitId: string, sizes: number[]) {
+    setState(
+      produce((s) => {
+        const tab = s.tabs[s.activeTabIndex];
+        if (!tab) return;
+        updateSplitSize(tab.layout, splitId, sizes);
+      })
+    );
+  }
+
   return {
     state,
     addTab,
@@ -144,7 +154,20 @@ export function createTerminalStore() {
     setActivePaneId,
     splitPane,
     closePane,
+    resizeSplit,
   };
+}
+
+function updateSplitSize(node: PaneNode, splitId: string, sizes: number[]) {
+  if (node.type === 'split') {
+    if (node.id === splitId) {
+      node.sizes = sizes;
+      return;
+    }
+    for (const child of node.children) {
+      updateSplitSize(child, splitId, sizes);
+    }
+  }
 }
 
 function getFirstPaneId(node: PaneNode): string | null {

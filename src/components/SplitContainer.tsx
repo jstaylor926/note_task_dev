@@ -3,21 +3,26 @@ import type { PaneNode } from '../lib/terminalState';
 import PaneContainer from './PaneContainer';
 
 interface SplitContainerProps {
+  id: string;
   direction: 'horizontal' | 'vertical';
   sizes: number[];
   children: PaneNode[];
   activePaneId: string | null;
   onFocusPane: (paneId: string) => void;
+  onResizeSplit?: (splitId: string, sizes: number[]) => void;
 }
 
 function SplitContainer(props: SplitContainerProps) {
-  const [localSizes, setLocalSizes] = createSignal<number[]>(props.sizes);
+  // Use createMemo or just use props.sizes directly with a local override during drag
+  const [dragSizes, setDragSizes] = createSignal<number[] | null>(null);
+
+  const displaySizes = () => dragSizes() ?? props.sizes;
 
   function handleDividerMouseDown(dividerIndex: number, e: MouseEvent) {
     e.preventDefault();
     const startPos =
       props.direction === 'vertical' ? e.clientX : e.clientY;
-    const startSizes = [...localSizes()];
+    const startSizes = [...displaySizes()];
     const container = (e.target as HTMLElement).parentElement;
     if (!container) return;
 
@@ -47,7 +52,7 @@ function SplitContainer(props: SplitContainerProps) {
 
       // Normalize
       const total = newSizes.reduce((a, b) => a + b, 0);
-      setLocalSizes(newSizes.map((s) => (s / total) * 100));
+      setDragSizes(newSizes.map((s) => (s / total) * 100));
     }
 
     function onMouseUp() {
@@ -55,6 +60,11 @@ function SplitContainer(props: SplitContainerProps) {
       document.removeEventListener('mouseup', onMouseUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      
+      if (dragSizes()) {
+        props.onResizeSplit?.(props.id, dragSizes()!);
+        setDragSizes(null);
+      }
     }
 
     document.addEventListener('mousemove', onMouseMove);
@@ -76,7 +86,7 @@ function SplitContainer(props: SplitContainerProps) {
             <div
               style={{
                 [props.direction === 'vertical' ? 'width' : 'height']:
-                  `${localSizes()[index()]}%`,
+                  `${displaySizes()[index()]}%`,
                 'min-width': props.direction === 'vertical' ? '40px' : undefined,
                 'min-height': props.direction === 'horizontal' ? '40px' : undefined,
               }}
@@ -86,6 +96,7 @@ function SplitContainer(props: SplitContainerProps) {
                 node={child}
                 activePaneId={props.activePaneId}
                 onFocusPane={props.onFocusPane}
+                onResizeSplit={props.onResizeSplit}
               />
             </div>
             {index() < props.children.length - 1 && (

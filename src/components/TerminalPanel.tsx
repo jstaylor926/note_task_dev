@@ -4,7 +4,7 @@ import XtermInstance from './XtermInstance';
 import PaneContainer from './PaneContainer';
 
 function TerminalPanel() {
-  const { state, addTab, removeTab, setActiveTab, setActivePaneId, splitPane, closePane } =
+  const { state, addTab, removeTab, setActiveTab, setActivePaneId, splitPane, closePane, resizeSplit } =
     createTerminalStore();
 
   onMount(() => {
@@ -86,6 +86,7 @@ function TerminalPanel() {
               node={tab().layout}
               activePaneId={state.activePaneId}
               onFocusPane={setActivePaneId}
+              onResizeSplit={resizeSplit}
             />
           )}
         </Show>

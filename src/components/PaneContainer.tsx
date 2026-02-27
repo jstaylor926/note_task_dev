@@ -7,6 +7,7 @@ interface PaneContainerProps {
   node: PaneNode;
   activePaneId: string | null;
   onFocusPane: (paneId: string) => void;
+  onResizeSplit?: (splitId: string, sizes: number[]) => void;
 }
 
 function PaneContainer(props: PaneContainerProps) {
@@ -36,10 +37,12 @@ function PaneContainer(props: PaneContainerProps) {
           const split = node() as PaneNode & { type: 'split' };
           return (
             <SplitContainer
+              id={split.id}
               direction={split.direction}
               sizes={split.sizes}
               activePaneId={props.activePaneId}
               onFocusPane={props.onFocusPane}
+              onResizeSplit={props.onResizeSplit}
             >
               {split.children}
             </SplitContainer>
