@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, cleanup } from '@solidjs/testing-library';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { render, cleanup, fireEvent, screen } from '@solidjs/testing-library';
 import { invoke } from '@tauri-apps/api/core';
 
 // Mock xterm.js — jsdom lacks canvas support
@@ -34,9 +34,13 @@ vi.mock('@xterm/addon-search', () => {
   return { SearchAddon: MockSearchAddon };
 });
 
+beforeEach(() => {
+  // Clear the state from module-level stores for each test
+  vi.clearAllMocks();
+});
+
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
 });
 
 describe('TerminalPanel', () => {
@@ -65,5 +69,68 @@ describe('TerminalPanel', () => {
     const wrapper = container.firstElementChild as HTMLElement;
     expect(wrapper.className).toContain('h-full');
     expect(wrapper.className).toContain('w-full');
+  });
+
+  it('creates a new tab when + button is clicked', async () => {
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const { default: TerminalPanel } = await import('../TerminalPanel');
+    const { container } = render(() => <TerminalPanel />);
+    
+    // Initial state: 1 tab
+    let buttons = container.querySelectorAll('button');
+    const plusButton = Array.from(buttons).find(
+      (b) => b.textContent?.trim() === '+',
+    );
+    
+    // Should have 1 tab + 1 add button
+    expect(buttons.length).toBe(2); 
+    
+    if (plusButton) {
+      fireEvent.click(plusButton);
+    }
+    
+    // After click: 2 tabs + 1 add button
+    buttons = container.querySelectorAll('button');
+    expect(buttons.length).toBe(3);
+  });
+
+  it('handles Cmd+T shortcut to create a new tab', async () => {
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const { default: TerminalPanel } = await import('../TerminalPanel');
+    const { container } = render(() => <TerminalPanel />);
+    
+    // Initial state: 1 tab
+    let buttons = container.querySelectorAll('button');
+    expect(buttons.length).toBe(2); // 1 tab + 1 add button
+    
+    // Simulate Cmd+T
+    fireEvent.keyDown(document, { key: 't', metaKey: true });
+    
+    // After shortcut: 2 tabs + 1 add button
+    buttons = container.querySelectorAll('button');
+    expect(buttons.length).toBe(3);
+  });
+
+  it('handles Cmd+D shortcut to split pane vertically', async () => {
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const { default: TerminalPanel } = await import('../TerminalPanel');
+    const { container } = render(() => <TerminalPanel />);
+    
+    // Mock getBoundingClientRect for split container width
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, value: 500 });
+    
+    // We start with one xterm instance container
+    let xtermContainers = container.querySelectorAll('.xterm');
+    
+    // Simulate Cmd+D (split vertically)
+    fireEvent.keyDown(document, { key: 'd', metaKey: true });
+    
+    // Give SolidJS a tick to render
+    await Promise.resolve();
+    
+    // Now there should be two panes rendered in the DOM, meaning 2 xterm containers
+    // Note: Due to jsdom and mocks, we might not have .xterm classes. Let's check for the split divider.
+    const dividers = container.querySelectorAll('.cursor-col-resize');
+    expect(dividers.length).toBe(1);
   });
 });
