@@ -17,6 +17,8 @@ notify = "8.2.0"
 anyhow = "1.0.102"
 sha2 = "0.10"
 ignore = "0.4"
+portable-pty = "0.8"
+base64 = "0.22"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

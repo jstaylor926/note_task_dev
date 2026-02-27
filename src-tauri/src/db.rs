@@ -306,6 +306,31 @@ pub fn delete_entities_by_source_file(conn: &Connection, source_file: &str) -> R
     Ok(deleted)
 }
 
+/// Insert a terminal command record.
+pub fn insert_terminal_command(
+    conn: &Connection,
+    profile_id: &str,
+    command: &str,
+    cwd: Option<&str>,
+    exit_code: Option<i32>,
+    duration_ms: Option<u64>,
+) -> Result<String> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO terminal_commands (id, workspace_profile_id, command, cwd, exit_code, duration_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            id,
+            profile_id,
+            command,
+            cwd,
+            exit_code,
+            duration_ms.map(|d| d as i64),
+        ],
+    )?;
+    Ok(id)
+}
+
 /// Delete the file_index entry for a file.
 pub fn delete_file_index(conn: &Connection, file_path: &str, profile_id: &str) -> Result<()> {
     conn.execute(
@@ -433,6 +458,33 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM entities WHERE source_file = 'src/other.rs'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_insert_terminal_command() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let profile_id = get_active_profile_id(&conn).unwrap().unwrap();
+
+        let id = insert_terminal_command(
+            &conn,
+            &profile_id,
+            "ls -la",
+            Some("/home/user"),
+            Some(0),
+            Some(150),
+        )
+        .unwrap();
+        assert!(!id.is_empty());
+
+        // Verify inserted
+        let command: String = conn
+            .query_row(
+                "SELECT command FROM terminal_commands WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(command, "ls -la");
     }
 
     #[test]

@@ -5,6 +5,11 @@ pub const INDEXING_FILE_COMPLETE: &str = "indexing:file-complete";
 pub const INDEXING_FILE_ERROR: &str = "indexing:file-error";
 pub const INDEXING_FILE_DELETED: &str = "indexing:file-deleted";
 
+pub const PTY_OUTPUT: &str = "pty:output";
+pub const PTY_EXIT: &str = "pty:exit";
+pub const TERMINAL_COMMAND_START: &str = "terminal:command-start";
+pub const TERMINAL_COMMAND_END: &str = "terminal:command-end";
+
 #[derive(Clone, Serialize)]
 pub struct IndexingProgressPayload {
     pub completed: usize,
@@ -32,6 +37,33 @@ pub struct IndexingFileErrorPayload {
 #[derive(Clone, Serialize)]
 pub struct IndexingFileDeletedPayload {
     pub file_path: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct PtyOutputPayload {
+    pub session_id: String,
+    pub data: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct PtyExitPayload {
+    pub session_id: String,
+    pub exit_code: Option<i32>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct TerminalCommandStartPayload {
+    pub session_id: String,
+    pub command: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct TerminalCommandEndPayload {
+    pub session_id: String,
+    pub command: String,
+    pub exit_code: Option<i32>,
+    pub cwd: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 
 #[cfg(test)]

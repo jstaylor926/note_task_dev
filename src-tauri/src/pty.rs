@@ -1,0 +1,309 @@
+use base64::Engine;
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use std::collections::HashMap;
+use std::io::Read;
+use std::thread::JoinHandle;
+use tauri::Emitter;
+use tokio::sync::oneshot;
+
+use crate::events::{
+    PtyExitPayload, PtyOutputPayload, TerminalCommandEndPayload, TerminalCommandStartPayload,
+    PTY_EXIT, PTY_OUTPUT, TERMINAL_COMMAND_END, TERMINAL_COMMAND_START,
+};
+use crate::osc_parser::{OscEvent, OscParser};
+
+/// Detect the default shell from $SHELL or fall back to platform default.
+pub fn detect_default_shell() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| {
+        if cfg!(target_os = "macos") {
+            "/bin/zsh".to_string()
+        } else {
+            "/bin/bash".to_string()
+        }
+    })
+}
+
+pub struct PtySession {
+    master: Box<dyn MasterPty + Send>,
+    child: Box<dyn Child + Send + Sync>,
+    _reader_handle: JoinHandle<()>,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+}
+
+pub struct PtyManager {
+    sessions: HashMap<String, PtySession>,
+}
+
+impl PtyManager {
+    pub fn new() -> Self {
+        Self {
+            sessions: HashMap::new(),
+        }
+    }
+
+    pub fn create_session(
+        &mut self,
+        id: String,
+        app_handle: tauri::AppHandle,
+        cwd: Option<String>,
+        shell_command: Option<CommandBuilder>,
+    ) -> Result<(), String> {
+        if self.sessions.contains_key(&id) {
+            return Err(format!("Session '{}' already exists", id));
+        }
+
+        let pty_system = native_pty_system();
+        let size = PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+
+        let pair = pty_system
+            .openpty(size)
+            .map_err(|e| format!("Failed to open PTY: {}", e))?;
+
+        let mut cmd = shell_command.unwrap_or_else(|| {
+            let shell = detect_default_shell();
+            CommandBuilder::new(shell)
+        });
+
+        if let Some(ref dir) = cwd {
+            cmd.cwd(dir);
+        }
+
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("Failed to spawn shell: {}", e))?;
+
+        // Drop the slave — we only interact via master
+        drop(pair.slave);
+
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("Failed to clone PTY reader: {}", e))?;
+
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+
+        let session_id = id.clone();
+        let reader_handle = std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            let engine = base64::engine::general_purpose::STANDARD;
+            let mut osc_parser = OscParser::new();
+            let mut current_command: Option<String> = None;
+            let mut command_start_time: Option<std::time::Instant> = None;
+            let mut current_cwd: Option<String> = None;
+
+            loop {
+                // Check for shutdown signal (non-blocking)
+                if shutdown_rx.try_recv().is_ok() {
+                    break;
+                }
+
+                match reader.read(&mut buf) {
+                    Ok(0) => {
+                        // EOF — process exited
+                        let _ = app_handle.emit(
+                            PTY_EXIT,
+                            PtyExitPayload {
+                                session_id: session_id.clone(),
+                                exit_code: None,
+                            },
+                        );
+                        break;
+                    }
+                    Ok(n) => {
+                        let result = osc_parser.parse(&buf[..n]);
+
+                        // Process OSC events
+                        for event in &result.events {
+                            match event {
+                                OscEvent::CommandText { text } => {
+                                    current_command = Some(text.clone());
+                                }
+                                OscEvent::CommandStart => {
+                                    command_start_time = Some(std::time::Instant::now());
+                                    let _ = app_handle.emit(
+                                        TERMINAL_COMMAND_START,
+                                        TerminalCommandStartPayload {
+                                            session_id: session_id.clone(),
+                                            command: current_command
+                                                .clone()
+                                                .unwrap_or_default(),
+                                        },
+                                    );
+                                }
+                                OscEvent::CommandEnd { exit_code } => {
+                                    let duration_ms = command_start_time
+                                        .map(|t| t.elapsed().as_millis() as u64);
+                                    let _ = app_handle.emit(
+                                        TERMINAL_COMMAND_END,
+                                        TerminalCommandEndPayload {
+                                            session_id: session_id.clone(),
+                                            command: current_command
+                                                .take()
+                                                .unwrap_or_default(),
+                                            exit_code: *exit_code,
+                                            cwd: current_cwd.clone(),
+                                            duration_ms,
+                                        },
+                                    );
+                                    command_start_time = None;
+                                }
+                                OscEvent::CwdChange { path } => {
+                                    current_cwd = Some(path.clone());
+                                }
+                            }
+                        }
+
+                        // Forward clean output to frontend
+                        if !result.output.is_empty() {
+                            let encoded = engine.encode(&result.output);
+                            let _ = app_handle.emit(
+                                PTY_OUTPUT,
+                                PtyOutputPayload {
+                                    session_id: session_id.clone(),
+                                    data: encoded,
+                                },
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("PTY read error for session '{}': {}", session_id, e);
+                        let _ = app_handle.emit(
+                            PTY_EXIT,
+                            PtyExitPayload {
+                                session_id: session_id.clone(),
+                                exit_code: None,
+                            },
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+
+        let session = PtySession {
+            master: pair.master,
+            child,
+            _reader_handle: reader_handle,
+            shutdown_tx: Some(shutdown_tx),
+        };
+
+        self.sessions.insert(id, session);
+        Ok(())
+    }
+
+    pub fn write(&mut self, id: &str, data: &[u8]) -> Result<(), String> {
+        let session = self
+            .sessions
+            .get_mut(id)
+            .ok_or_else(|| format!("Session '{}' not found", id))?;
+
+        let mut writer = session
+            .master
+            .take_writer()
+            .map_err(|e| format!("Failed to get PTY writer: {}", e))?;
+
+        use std::io::Write;
+        writer
+            .write_all(data)
+            .map_err(|e| format!("Failed to write to PTY: {}", e))?;
+
+        Ok(())
+    }
+
+    pub fn resize(&mut self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
+        let session = self
+            .sessions
+            .get_mut(id)
+            .ok_or_else(|| format!("Session '{}' not found", id))?;
+
+        session
+            .master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("Failed to resize PTY: {}", e))?;
+
+        Ok(())
+    }
+
+    pub fn kill(&mut self, id: &str) -> Result<(), String> {
+        let mut session = self
+            .sessions
+            .remove(id)
+            .ok_or_else(|| format!("Session '{}' not found", id))?;
+
+        // Signal the reader thread to stop
+        if let Some(tx) = session.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+
+        // Kill the child process
+        session
+            .child
+            .kill()
+            .map_err(|e| format!("Failed to kill process: {}", e))?;
+
+        Ok(())
+    }
+
+    pub fn kill_all(&mut self) {
+        let ids: Vec<String> = self.sessions.keys().cloned().collect();
+        for id in ids {
+            if let Err(e) = self.kill(&id) {
+                log::error!("Failed to kill PTY session '{}': {}", id, e);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pty_manager_new_empty() {
+        let manager = PtyManager::new();
+        assert!(manager.sessions.is_empty());
+    }
+
+    #[test]
+    fn test_detect_default_shell() {
+        let shell = detect_default_shell();
+        assert!(!shell.is_empty());
+        // Should be an absolute path
+        assert!(shell.starts_with('/'));
+    }
+
+    #[test]
+    fn test_kill_nonexistent_session() {
+        let mut manager = PtyManager::new();
+        let result = manager.kill("nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_write_nonexistent_session() {
+        let mut manager = PtyManager::new();
+        let result = manager.write("nonexistent", b"hello");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_resize_nonexistent_session() {
+        let mut manager = PtyManager::new();
+        let result = manager.resize("nonexistent", 80, 24);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+}
