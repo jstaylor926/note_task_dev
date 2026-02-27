@@ -78,7 +78,10 @@ function XtermInstance(props: XtermInstanceProps) {
     // Forward user input to PTY (base64-encoded)
     terminal.onData((data) => {
       const encoded = btoa(data);
-      ptyWrite(props.sessionId, encoded);
+      ptyWrite(props.sessionId, encoded).catch((err) => {
+        console.error('Failed to write to PTY:', err);
+        terminal?.write(`\r\n[Write error: ${err}]`);
+      });
     });
 
     // Listen for PTY output
