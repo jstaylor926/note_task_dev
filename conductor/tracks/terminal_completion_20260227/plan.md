@@ -1,18 +1,18 @@
 # Implementation Plan: Phase 3 Terminal Completion
 
-## Phase 1: Critical Fixes (Tier 1)
-- [ ] **Task: Fix `take_writer()` in Rust**
-    - [ ] Update `PtySession` struct in `pty.rs` to store the writer.
-    - [ ] Call `take_writer()` once during session creation.
-    - [ ] Use the stored writer in `PtyManager::write()`.
-- [ ] **Task: Retrieve real exit codes**
-    - [ ] Update `PtySession` reader thread or `kill()` method to wait on the child process.
-    - [ ] Populate `exit_code` in the `pty:exit` payload.
-- [ ] **Task: Support initial PTY size**
-    - [ ] Update `pty_create` IPC command to accept `cols` and `rows`.
-    - [ ] Pass these dimensions to the PTY builder in `pty.rs`.
-    - [ ] Update frontend `ptyCreate` wrapper and `XtermInstance` to pass current dimensions.
-- [ ] **Task: Conductor - User Manual Verification 'Phase 1: Critical Fixes' (Protocol in workflow.md)**
+## Phase 1: Critical Fixes (Tier 1) [checkpoint: e237ea0]
+- [x] **Task: Fix `take_writer()` in Rust** 88b557c
+    - [x] Update `PtySession` struct in `pty.rs` to store the writer.
+    - [x] Call `take_writer()` once during session creation.
+    - [x] Use the stored writer in `PtyManager::write()`.
+- [x] **Task: Retrieve real exit codes** 88b557c
+    - [x] Update `PtySession` reader thread or `kill()` method to wait on the child process.
+    - [x] Populate `exit_code` in the `pty:exit` payload.
+- [x] **Task: Support initial PTY size** 88b557c
+    - [x] Update `pty_create` IPC command to accept `cols` and `rows`.
+    - [x] Pass these dimensions to the PTY builder in `pty.rs`.
+    - [x] Update frontend `ptyCreate` wrapper and `XtermInstance` to pass current dimensions.
+- [x] **Task: Conductor - User Manual Verification 'Phase 1: Critical Fixes' (Protocol in workflow.md)** e237ea0
 
 ## Phase 2: Infrastructure & Plumbing (Tier 2)
 - [ ] **Task: Wire Command Persistence to SQLite**
