@@ -46,11 +46,11 @@
     - [x] Emit a frontend event/notification when a long-running command completes or fails.
 - [x] **Task: Conductor - User Manual Verification 'Phase 3: Intelligence Layer' (Protocol in workflow.md)** 44bed55
 
-## Phase 4: Testing & Polish (Tier 4)
-- [~] **Task: Add Behavioral Tests for TerminalPanel**
-    - [ ] Write tests in `TerminalPanel.test.tsx` for tab creation, splitting, and keyboard shortcuts.
-- [ ] **Task: Implement Fish Shell Support**
-    - [ ] Add Fish-specific shell hooks in `shell_hooks.rs`.
-- [ ] **Task: Validate CWD Path Security**
-    - [ ] Update `pty_commands.rs` to validate that `cwd` exists and is within a workspace-scoped directory.
-- [ ] **Task: Conductor - User Manual Verification 'Phase 4: Testing & Polish' (Protocol in workflow.md)**
+## Phase 4: Testing & Polish (Tier 4) [checkpoint: 97c5ea9]
+- [x] **Task: Add Behavioral Tests for TerminalPanel** 08e2628
+    - [x] Write tests in `TerminalPanel.test.tsx` for tab creation, splitting, and keyboard shortcuts.
+- [x] **Task: Implement Fish Shell Support** 70782c1
+    - [x] Add Fish-specific shell hooks in `shell_hooks.rs`.
+- [x] **Task: Validate CWD Path Security** 4afd0af
+    - [x] Update `pty_commands.rs` to validate that `cwd` exists and is within a workspace-scoped directory.
+- [x] **Task: Conductor - User Manual Verification 'Phase 4: Testing & Polish' (Protocol in workflow.md)** 97c5ea9
