@@ -79,6 +79,36 @@ fn detect_source_type(path: &Path) -> &'static str {
     }
 }
 
+/// Send terminal output to the sidecar /ingest endpoint for chunking + embedding.
+pub async fn process_terminal_output(
+    command_id: &str,
+    command: &str,
+    output: &str,
+    sidecar_url: &str,
+    git_branch: &str,
+) -> anyhow::Result<IngestResponse> {
+    let req = IngestRequest {
+        file_path: format!("terminal_{}", command_id),
+        content: format!("Command: {}\n\nOutput:\n{}", command, output),
+        language: "text".to_string(),
+        source_type: "terminal".to_string(),
+        git_branch: git_branch.to_string(),
+    };
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/ingest", sidecar_url);
+
+    let res = client.post(url).json(&req).send().await?;
+
+    if !res.status().is_success() {
+        let err = res.text().await?;
+        anyhow::bail!("Sidecar error: {}", err);
+    }
+
+    let result = res.json::<IngestResponse>().await?;
+    Ok(result)
+}
+
 /// Send a file's content to the sidecar /ingest endpoint for chunking + embedding.
 /// Returns the full ingest response including chunk count and extracted entities.
 pub async fn process_file(path: &Path, sidecar_url: &str, git_branch: &str) -> anyhow::Result<IngestResponse> {

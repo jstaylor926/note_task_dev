@@ -145,12 +145,19 @@ fn main() {
             app.listen(events::TERMINAL_COMMAND_END, move |event| {
                 if let Ok(payload) = serde_json::from_str::<events::TerminalCommandEndPayload>(event.payload()) {
                     let state = app_handle_for_events.state::<AppState>();
-                    if let Ok(conn) = state.inner().db.lock() {
-                        let profile_id = db::get_active_profile_id(&conn)
+                    let (profile_id, sidecar_url, git_branch) = {
+                        let conn = state.inner().db.lock().unwrap();
+                        let pid = db::get_active_profile_id(&conn)
                             .unwrap_or(None)
                             .unwrap_or_else(|| "default".to_string());
-                        
-                        if let Err(e) = db::insert_terminal_command(
+                        let url = state.inner().sidecar_url.clone();
+                        let branch = state.inner().git_branch.clone();
+                        (pid, url, branch)
+                    };
+                    
+                    let command_id = {
+                        let conn = state.inner().db.lock().unwrap();
+                        db::insert_terminal_command(
                             &conn,
                             &profile_id,
                             &payload.command,
@@ -158,8 +165,27 @@ fn main() {
                             payload.exit_code,
                             payload.duration_ms,
                             payload.output.as_deref(),
-                        ) {
-                            log::error!("Failed to persist terminal command: {}", e);
+                        ).unwrap_or_default()
+                    };
+
+                    // Fire off background task for embedding if output is substantial
+                    if !command_id.is_empty() {
+                        if let Some(ref output) = payload.output {
+                            if output.len() > 500 {
+                                let output_clone = output.clone();
+                                let command_clone = payload.command.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    if let Err(e) = crate::ingest::process_terminal_output(
+                                        &command_id,
+                                        &command_clone,
+                                        &output_clone,
+                                        &sidecar_url,
+                                        &git_branch,
+                                    ).await {
+                                        log::error!("Failed to embed terminal output: {}", e);
+                                    }
+                                });
+                            }
                         }
                     }
                 }
