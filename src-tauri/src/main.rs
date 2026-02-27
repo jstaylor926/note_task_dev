@@ -36,6 +36,24 @@ pub struct AppState {
     pub sidecar_manager: Mutex<sidecar::SidecarManager>,
     pub sidecar_url: String,
     pub indexing: Mutex<IndexingState>,
+    pub git_branch: String,
+}
+
+/// Detect the current git branch by running `git rev-parse --abbrev-ref HEAD`.
+fn detect_git_branch(project_root: &std::path::Path) -> String {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(project_root)
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "main".to_string())
 }
 
 fn main() {
@@ -85,27 +103,30 @@ fn main() {
                 // Don't panic — the app can run in degraded mode
             }
 
-            // 5. Store shared state
+            // 5. Detect git branch and project root
+            let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("failed to resolve project root")
+                .to_path_buf();
+            let git_branch = detect_git_branch(&project_root);
+            log::info!("Detected git branch: {}", git_branch);
+
+            // 6. Store shared state
             let state = AppState {
                 db: Mutex::new(conn),
                 sidecar_manager: Mutex::new(sidecar_manager),
                 sidecar_url: sidecar_url.clone(),
                 indexing: Mutex::new(IndexingState::new()),
+                git_branch,
             };
             app.manage(state);
 
-            // 6. Start background health monitor
+            // 7. Start background health monitor
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(sidecar::health_monitor_loop(
                 app_handle.clone(),
                 sidecar_url,
             ));
-
-            // 7. Start file watcher on project root
-            let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("failed to resolve project root")
-                .to_path_buf();
             tauri::async_runtime::spawn(watcher::start_watcher(
                 app_handle,
                 project_root,

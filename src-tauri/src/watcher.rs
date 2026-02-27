@@ -2,6 +2,7 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use tauri::AppHandle;
+use crate::db;
 use crate::events;
 use crate::ingest;
 use crate::AppState;
@@ -73,7 +74,37 @@ fn process_file_with_events(app_handle: AppHandle, path: PathBuf) {
         let sidecar_url = state.sidecar_url.clone();
         let file_path_str = path.to_string_lossy().to_string();
 
-        // Update state: new file queued
+        // 1. Read content and compute hash
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to read file {:?}: {}", path, e);
+                return;
+            }
+        };
+
+        if content.trim().is_empty() {
+            return;
+        }
+
+        let new_hash = ingest::compute_sha256(&content);
+        let file_size = content.len() as u64;
+        let language = ingest::detect_language(&path);
+
+        // 2. Check file_index — skip if hash matches (lock scope limited)
+        {
+            let conn = state.db.lock().unwrap();
+            if let Ok(Some(profile_id)) = db::get_active_profile_id(&conn) {
+                if let Ok(Some(existing_hash)) = db::get_file_hash(&conn, &file_path_str, &profile_id) {
+                    if existing_hash == new_hash {
+                        log::debug!("Skipping unchanged file {:?}", path);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // 3. File is new or changed — emit queued event
         {
             let mut indexing = state.indexing.lock().unwrap();
             indexing.total_queued += 1;
@@ -86,9 +117,54 @@ fn process_file_with_events(app_handle: AppHandle, path: PathBuf) {
             });
         }
 
-        match ingest::process_file(&path, &sidecar_url).await {
-            Ok(chunk_count) => {
-                log::info!("Processed file {:?} ({} chunks)", path, chunk_count);
+        // 4. Delete old embeddings + entities for this file, then ingest new content
+        let _ = ingest::delete_file_embeddings(&file_path_str, &sidecar_url).await;
+        {
+            let conn = state.db.lock().unwrap();
+            let _ = db::delete_entities_by_source_file(&conn, &file_path_str);
+        }
+
+        let git_branch = state.git_branch.clone();
+        match ingest::process_file(&path, &sidecar_url, &git_branch).await {
+            Ok(resp) => {
+                log::info!("Processed file {:?} ({} chunks, {} entities)", path, resp.chunk_count, resp.entities.len());
+
+                // 5. Update file_index and write entities to SQLite
+                {
+                    let conn = state.db.lock().unwrap();
+                    if let Ok(Some(profile_id)) = db::get_active_profile_id(&conn) {
+                        if let Err(e) = db::upsert_file_index(
+                            &conn,
+                            &file_path_str,
+                            &profile_id,
+                            &new_hash,
+                            language,
+                            resp.chunk_count,
+                            file_size,
+                        ) {
+                            log::error!("Failed to update file_index for {:?}: {}", path, e);
+                        }
+
+                        for entity in &resp.entities {
+                            let metadata = serde_json::json!({
+                                "start_line": entity.start_line,
+                                "end_line": entity.end_line,
+                            });
+                            if let Err(e) = db::upsert_entity(
+                                &conn,
+                                &entity.entity_type,
+                                &entity.name,
+                                &file_path_str,
+                                &profile_id,
+                                &metadata.to_string(),
+                            ) {
+                                log::error!("Failed to upsert entity '{}': {}", entity.name, e);
+                            }
+                        }
+                    }
+                }
+
+                let chunk_count = resp.chunk_count;
                 let mut indexing = state.indexing.lock().unwrap();
                 indexing.completed += 1;
                 let is_idle = indexing.is_idle();

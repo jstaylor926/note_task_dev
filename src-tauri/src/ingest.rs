@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 
@@ -12,12 +13,29 @@ struct IngestRequest {
 }
 
 #[derive(Deserialize)]
-struct IngestResponse {
-    chunk_count: usize,
+pub struct EntityInfo {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub entity_type: String,
+    pub start_line: Option<usize>,
+    pub end_line: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub struct IngestResponse {
+    pub chunk_count: usize,
+    pub entities: Vec<EntityInfo>,
+}
+
+/// Compute the SHA-256 hash of a string, returning the hex digest.
+pub fn compute_sha256(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 /// Detect the programming language from a file extension.
-fn detect_language(path: &Path) -> &'static str {
+pub fn detect_language(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("rs") => "rust",
         Some("py") => "python",
@@ -62,14 +80,15 @@ fn detect_source_type(path: &Path) -> &'static str {
 }
 
 /// Send a file's content to the sidecar /ingest endpoint for chunking + embedding.
-pub async fn process_file(path: &Path, sidecar_url: &str) -> anyhow::Result<usize> {
+/// Returns the full ingest response including chunk count and extracted entities.
+pub async fn process_file(path: &Path, sidecar_url: &str, git_branch: &str) -> anyhow::Result<IngestResponse> {
     if !path.is_file() {
-        return Ok(0);
+        return Ok(IngestResponse { chunk_count: 0, entities: vec![] });
     }
 
     let content = fs::read_to_string(path)?;
     if content.trim().is_empty() {
-        return Ok(0);
+        return Ok(IngestResponse { chunk_count: 0, entities: vec![] });
     }
 
     let language = detect_language(path).to_string();
@@ -80,7 +99,7 @@ pub async fn process_file(path: &Path, sidecar_url: &str) -> anyhow::Result<usiz
         content,
         language,
         source_type,
-        git_branch: "main".to_string(),
+        git_branch: git_branch.to_string(),
     };
 
     let client = reqwest::Client::new();
@@ -94,7 +113,7 @@ pub async fn process_file(path: &Path, sidecar_url: &str) -> anyhow::Result<usiz
     }
 
     let resp: IngestResponse = res.json().await?;
-    Ok(resp.chunk_count)
+    Ok(resp)
 }
 
 /// Delete all embeddings for a given file from the sidecar.
@@ -119,6 +138,19 @@ pub async fn delete_file_embeddings(file_path: &str, sidecar_url: &str) -> anyho
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_compute_sha256() {
+        let hash = compute_sha256("hello world");
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+        // Same input produces same hash
+        assert_eq!(hash, compute_sha256("hello world"));
+        // Different input produces different hash
+        assert_ne!(hash, compute_sha256("hello world!"));
+    }
 
     #[test]
     fn test_detect_language() {

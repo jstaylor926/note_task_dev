@@ -263,6 +263,49 @@ pub fn upsert_file_index(
     Ok(())
 }
 
+/// Insert or update an entity (function, class, struct, etc.) extracted from a source file.
+pub fn upsert_entity(
+    conn: &Connection,
+    entity_type: &str,
+    title: &str,
+    source_file: &str,
+    profile_id: &str,
+    metadata_json: &str,
+) -> Result<()> {
+    // Check if an entity with the same title+source_file+type already exists
+    let existing_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM entities WHERE title = ?1 AND source_file = ?2 AND entity_type = ?3",
+            rusqlite::params![title, source_file, entity_type],
+            |row| row.get(0),
+        )
+        .ok();
+
+    if let Some(id) = existing_id {
+        conn.execute(
+            "UPDATE entities SET metadata = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+            rusqlite::params![metadata_json, id],
+        )?;
+    } else {
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO entities (id, entity_type, title, source_file, workspace_profile_id, metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![id, entity_type, title, source_file, profile_id, metadata_json],
+        )?;
+    }
+    Ok(())
+}
+
+/// Delete all entities associated with a source file.
+pub fn delete_entities_by_source_file(conn: &Connection, source_file: &str) -> Result<usize> {
+    let deleted = conn.execute(
+        "DELETE FROM entities WHERE source_file = ?1",
+        rusqlite::params![source_file],
+    )?;
+    Ok(deleted)
+}
+
 /// Delete the file_index entry for a file.
 pub fn delete_file_index(conn: &Connection, file_path: &str, profile_id: &str) -> Result<()> {
     conn.execute(
@@ -335,5 +378,67 @@ mod tests {
         let profile_id = get_active_profile_id(&conn).unwrap().unwrap();
         // Should succeed even if the file doesn't exist
         delete_file_index(&conn, "nonexistent.rs", &profile_id).unwrap();
+    }
+
+    #[test]
+    fn test_entity_upsert_and_query() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let profile_id = get_active_profile_id(&conn).unwrap().unwrap();
+
+        let metadata = r#"{"start_line": 10, "end_line": 20}"#;
+        upsert_entity(&conn, "function", "my_func", "src/lib.rs", &profile_id, metadata).unwrap();
+
+        // Verify it was inserted
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities WHERE source_file = 'src/lib.rs'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Upsert again with updated metadata — should update, not duplicate
+        let new_metadata = r#"{"start_line": 10, "end_line": 25}"#;
+        upsert_entity(&conn, "function", "my_func", "src/lib.rs", &profile_id, new_metadata).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities WHERE source_file = 'src/lib.rs'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Verify metadata was updated
+        let stored: String = conn
+            .query_row(
+                "SELECT metadata FROM entities WHERE source_file = 'src/lib.rs' AND title = 'my_func'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(stored.contains("25"));
+    }
+
+    #[test]
+    fn test_delete_entities_by_source_file() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let profile_id = get_active_profile_id(&conn).unwrap().unwrap();
+
+        // Insert two entities for the same file
+        upsert_entity(&conn, "function", "func_a", "src/lib.rs", &profile_id, "{}").unwrap();
+        upsert_entity(&conn, "class", "MyClass", "src/lib.rs", &profile_id, "{}").unwrap();
+        // Insert one entity for a different file
+        upsert_entity(&conn, "function", "other_func", "src/other.rs", &profile_id, "{}").unwrap();
+
+        let deleted = delete_entities_by_source_file(&conn, "src/lib.rs").unwrap();
+        assert_eq!(deleted, 2);
+
+        // other.rs entity should still exist
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities WHERE source_file = 'src/other.rs'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_delete_entities_nonexistent_file() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let deleted = delete_entities_by_source_file(&conn, "nonexistent.rs").unwrap();
+        assert_eq!(deleted, 0);
     }
 }

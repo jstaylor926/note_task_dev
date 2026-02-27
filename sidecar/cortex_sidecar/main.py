@@ -10,7 +10,7 @@ import pyarrow as pa
 import uvicorn
 from fastapi import FastAPI
 
-from cortex_sidecar.chunking import chunk_text
+from cortex_sidecar.chunking import chunk_file, chunk_text
 from cortex_sidecar.routes.health import router as health_router
 
 logging.basicConfig(
@@ -155,17 +155,23 @@ async def embed_text(req: EmbedRequest):
 async def ingest_file(req: IngestRequest):
     """Ingest a full file: chunk, embed, and store in one pass."""
     try:
-        chunks = chunk_text(req.content)
+        chunks = chunk_file(req.content, req.language, file_path=req.file_path)
         if not chunks:
             return {"chunk_count": 0, "entities": []}
 
         table = app.state.lancedb.open_table("embeddings")
         now = datetime.now().isoformat()
         records = []
+        entities = []
 
         for chunk in chunks:
+            # Prepend context header to text for richer embeddings
+            embed_text = chunk.text
+            if chunk.context_header:
+                embed_text = chunk.context_header + "\n" + chunk.text
+
             if app.state.model:
-                vector = app.state.model.encode(chunk.text).tolist()
+                vector = app.state.model.encode(embed_text).tolist()
             else:
                 vector = [0.1] * 384
 
@@ -184,9 +190,17 @@ async def ingest_file(req: IngestRequest):
                 "updated_at": now,
             })
 
+            if chunk.entity_name and chunk.chunk_type in ("function", "class", "struct", "enum", "trait", "impl", "interface"):
+                entities.append({
+                    "name": chunk.entity_name,
+                    "type": chunk.chunk_type,
+                    "start_line": chunk.start_line,
+                    "end_line": chunk.end_line,
+                })
+
         table.add(records)
-        logger.info("Ingested %d chunks from %s", len(records), req.file_path)
-        return {"chunk_count": len(records), "entities": []}
+        logger.info("Ingested %d chunks from %s (%d entities)", len(records), req.file_path, len(entities))
+        return {"chunk_count": len(records), "entities": entities}
     except Exception as e:
         logger.error("Ingest failed for %s: %s", req.file_path, e)
         raise HTTPException(status_code=500, detail=str(e))
