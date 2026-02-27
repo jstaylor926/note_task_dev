@@ -67,9 +67,14 @@ async def lifespan(app: FastAPI):
     logger.info("Connecting to LanceDB at %s", lancedb_path)
 
     db = lancedb.connect(str(lancedb_path))
+    schema = get_lancedb_schema()
+
+    if "embeddings" not in db.list_tables().tables:
+        logger.info("Creating 'embeddings' table")
+        db.create_table("embeddings", schema=schema)
 
     app.state.lancedb = db
-    app.state.lancedb_schema = get_lancedb_schema()
+    app.state.lancedb_schema = schema
     app.state.data_dir = data_dir
 
     logger.info("Sidecar ready")

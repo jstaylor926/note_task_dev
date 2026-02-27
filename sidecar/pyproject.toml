@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "lancedb>=0.17",
     "pyarrow>=18.0",
+    "pytest-cov[dev]>=7.0.0",
 ]
 
 [project.optional-dependencies]
