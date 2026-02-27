@@ -307,7 +307,6 @@ pub fn delete_entities_by_source_file(conn: &Connection, source_file: &str) -> R
 }
 
 /// Insert a terminal command record.
-#[allow(dead_code)]
 pub fn insert_terminal_command(
     conn: &Connection,
     profile_id: &str,

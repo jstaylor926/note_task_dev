@@ -13,7 +13,7 @@ mod osc_parser;
 mod shell_hooks;
 
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Manager, Listener};
 
 pub struct IndexingState {
     pub total_queued: usize,
@@ -140,6 +140,29 @@ fn main() {
                 shell_hooks_dir,
             };
             app.manage(state);
+
+            let app_handle_for_events = app.handle().clone();
+            app.listen(events::TERMINAL_COMMAND_END, move |event| {
+                if let Ok(payload) = serde_json::from_str::<events::TerminalCommandEndPayload>(event.payload()) {
+                    let state = app_handle_for_events.state::<AppState>();
+                    if let Ok(conn) = state.inner().db.lock() {
+                        let profile_id = db::get_active_profile_id(&conn)
+                            .unwrap_or(None)
+                            .unwrap_or_else(|| "default".to_string());
+                        
+                        if let Err(e) = db::insert_terminal_command(
+                            &conn,
+                            &profile_id,
+                            &payload.command,
+                            payload.cwd.as_deref(),
+                            payload.exit_code,
+                            payload.duration_ms,
+                        ) {
+                            log::error!("Failed to persist terminal command: {}", e);
+                        }
+                    }
+                }
+            });
 
             // 7. Start background health monitor
             let app_handle = app.handle().clone();

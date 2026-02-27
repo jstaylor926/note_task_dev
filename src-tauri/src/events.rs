@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const INDEXING_PROGRESS: &str = "indexing:progress";
 pub const INDEXING_FILE_COMPLETE: &str = "indexing:file-complete";
@@ -57,7 +57,7 @@ pub struct TerminalCommandStartPayload {
     pub command: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TerminalCommandEndPayload {
     pub session_id: String,
     pub command: String,
