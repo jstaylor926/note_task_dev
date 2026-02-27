@@ -22,8 +22,10 @@ export interface TerminalCommandEndEvent {
 export async function ptyCreate(
   sessionId: string,
   cwd?: string,
+  cols?: number,
+  rows?: number,
 ): Promise<void> {
-  return invoke<void>('pty_create', { sessionId, cwd });
+  return invoke<void>('pty_create', { sessionId, cwd, cols, rows });
 }
 
 export async function ptyWrite(

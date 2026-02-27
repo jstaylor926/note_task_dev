@@ -7,6 +7,8 @@ use crate::pty::detect_default_shell;
 pub async fn pty_create(
     session_id: String,
     cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
@@ -17,7 +19,7 @@ pub async fn pty_create(
     });
 
     let mut manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
-    manager.create_session(session_id, app_handle, cwd, shell_cmd)
+    manager.create_session(session_id, app_handle, cwd, shell_cmd, cols, rows)
 }
 
 #[tauri::command]

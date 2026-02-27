@@ -1,7 +1,8 @@
 use base64::Engine;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use tauri::Emitter;
 use tokio::sync::oneshot;
@@ -25,7 +26,8 @@ pub fn detect_default_shell() -> String {
 
 pub struct PtySession {
     master: Box<dyn MasterPty + Send>,
-    child: Box<dyn Child + Send + Sync>,
+    writer: Box<dyn std::io::Write + Send>,
+    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     _reader_handle: JoinHandle<()>,
     shutdown_tx: Option<oneshot::Sender<()>>,
 }
@@ -47,6 +49,8 @@ impl PtyManager {
         app_handle: tauri::AppHandle,
         cwd: Option<String>,
         shell_command: Option<CommandBuilder>,
+        cols: Option<u16>,
+        rows: Option<u16>,
     ) -> Result<(), String> {
         if self.sessions.contains_key(&id) {
             return Err(format!("Session '{}' already exists", id));
@@ -54,8 +58,8 @@ impl PtyManager {
 
         let pty_system = native_pty_system();
         let size = PtySize {
-            rows: 24,
-            cols: 80,
+            rows: rows.unwrap_or(24),
+            cols: cols.unwrap_or(80),
             pixel_width: 0,
             pixel_height: 0,
         };
@@ -78,6 +82,9 @@ impl PtyManager {
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn shell: {}", e))?;
 
+        let child = Arc::new(Mutex::new(child));
+        let child_for_reader = Arc::clone(&child);
+
         // Drop the slave — we only interact via master
         drop(pair.slave);
 
@@ -85,6 +92,11 @@ impl PtyManager {
             .master
             .try_clone_reader()
             .map_err(|e| format!("Failed to clone PTY reader: {}", e))?;
+
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("Failed to take PTY writer: {}", e))?;
 
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
 
@@ -106,11 +118,14 @@ impl PtyManager {
                 match reader.read(&mut buf) {
                     Ok(0) => {
                         // EOF — process exited
+                        let mut child_guard = child_for_reader.lock().unwrap();
+                        let exit_code = child_guard.wait().ok().map(|s| s.exit_code() as i32);
+
                         let _ = app_handle.emit(
                             PTY_EXIT,
                             PtyExitPayload {
                                 session_id: session_id.clone(),
-                                exit_code: None,
+                                exit_code,
                             },
                         );
                         break;
@@ -173,11 +188,14 @@ impl PtyManager {
                     }
                     Err(e) => {
                         log::error!("PTY read error for session '{}': {}", session_id, e);
+                        let mut child_guard = child_for_reader.lock().unwrap();
+                        let exit_code = child_guard.wait().ok().map(|s| s.exit_code() as i32);
+
                         let _ = app_handle.emit(
                             PTY_EXIT,
                             PtyExitPayload {
                                 session_id: session_id.clone(),
-                                exit_code: None,
+                                exit_code,
                             },
                         );
                         break;
@@ -188,6 +206,7 @@ impl PtyManager {
 
         let session = PtySession {
             master: pair.master,
+            writer,
             child,
             _reader_handle: reader_handle,
             shutdown_tx: Some(shutdown_tx),
@@ -203,13 +222,8 @@ impl PtyManager {
             .get_mut(id)
             .ok_or_else(|| format!("Session '{}' not found", id))?;
 
-        let mut writer = session
-            .master
-            .take_writer()
-            .map_err(|e| format!("Failed to get PTY writer: {}", e))?;
-
-        use std::io::Write;
-        writer
+        session
+            .writer
             .write_all(data)
             .map_err(|e| format!("Failed to write to PTY: {}", e))?;
 
@@ -247,8 +261,8 @@ impl PtyManager {
         }
 
         // Kill the child process
-        session
-            .child
+        let mut child_guard = session.child.lock().unwrap();
+        child_guard
             .kill()
             .map_err(|e| format!("Failed to kill process: {}", e))?;
 
@@ -305,5 +319,20 @@ mod tests {
         let result = manager.resize("nonexistent", 80, 24);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_take_writer_twice_fails() {
+        let pty_system = native_pty_system();
+        let size = PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let pair = pty_system.openpty(size).unwrap();
+        let _writer1 = pair.master.take_writer().unwrap();
+        let writer2 = pair.master.take_writer();
+        assert!(writer2.is_err());
     }
 }

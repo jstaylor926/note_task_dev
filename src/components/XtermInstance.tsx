@@ -67,8 +67,8 @@ function XtermInstance(props: XtermInstanceProps) {
 
     // Create PTY session
     try {
-      await ptyCreate(props.sessionId, props.cwd);
-      // Send initial resize
+      await ptyCreate(props.sessionId, props.cwd, terminal.cols, terminal.rows);
+      // Send initial resize just in case
       await ptyResize(props.sessionId, terminal.cols, terminal.rows);
     } catch (e) {
       terminal.writeln(`\r\n[Failed to create terminal session: ${e}]`);
