@@ -4,6 +4,7 @@
 mod commands;
 mod db;
 mod sidecar;
+mod watcher;
 
 use std::sync::Mutex;
 use tauri::Manager;
