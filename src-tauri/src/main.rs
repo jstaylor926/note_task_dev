@@ -157,6 +157,7 @@ fn main() {
                             payload.cwd.as_deref(),
                             payload.exit_code,
                             payload.duration_ms,
+                            payload.output.as_deref(),
                         ) {
                             log::error!("Failed to persist terminal command: {}", e);
                         }

@@ -64,6 +64,7 @@ pub struct TerminalCommandEndPayload {
     pub exit_code: Option<i32>,
     pub cwd: Option<String>,
     pub duration_ms: Option<u64>,
+    pub output: Option<String>,
 }
 
 #[cfg(test)]

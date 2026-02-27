@@ -108,6 +108,7 @@ impl PtyManager {
             let mut current_command: Option<String> = None;
             let mut command_start_time: Option<std::time::Instant> = None;
             let mut current_cwd: Option<String> = None;
+            let mut command_output: Option<Vec<u8>> = None;
 
             loop {
                 // Check for shutdown signal (non-blocking)
@@ -141,6 +142,7 @@ impl PtyManager {
                                 }
                                 OscEvent::CommandStart => {
                                     command_start_time = Some(std::time::Instant::now());
+                                    command_output = Some(Vec::new());
                                     let _ = app_handle.emit(
                                         TERMINAL_COMMAND_START,
                                         TerminalCommandStartPayload {
@@ -154,6 +156,9 @@ impl PtyManager {
                                 OscEvent::CommandEnd { exit_code } => {
                                     let duration_ms = command_start_time
                                         .map(|t| t.elapsed().as_millis() as u64);
+                                    let output_str = command_output.take().and_then(|bytes| {
+                                        String::from_utf8(bytes).ok()
+                                    });
                                     let _ = app_handle.emit(
                                         TERMINAL_COMMAND_END,
                                         TerminalCommandEndPayload {
@@ -164,6 +169,7 @@ impl PtyManager {
                                             exit_code: *exit_code,
                                             cwd: current_cwd.clone(),
                                             duration_ms,
+                                            output: output_str,
                                         },
                                     );
                                     command_start_time = None;
@@ -174,8 +180,14 @@ impl PtyManager {
                             }
                         }
 
-                        // Forward clean output to frontend
+                        // Forward clean output to frontend and capture if recording
                         if !result.output.is_empty() {
+                            if let Some(ref mut output_buf) = command_output {
+                                // Cap at 1MB to prevent excessive memory usage
+                                if output_buf.len() < 1024 * 1024 {
+                                    output_buf.extend_from_slice(&result.output);
+                                }
+                            }
                             let encoded = engine.encode(&result.output);
                             let _ = app_handle.emit(
                                 PTY_OUTPUT,

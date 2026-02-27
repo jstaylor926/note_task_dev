@@ -314,11 +314,13 @@ pub fn insert_terminal_command(
     cwd: Option<&str>,
     exit_code: Option<i32>,
     duration_ms: Option<u64>,
+    output: Option<&str>,
 ) -> Result<String> {
     let id = Uuid::new_v4().to_string();
+    let size_bytes = output.map(|s| s.len() as i64);
     conn.execute(
-        "INSERT INTO terminal_commands (id, workspace_profile_id, command, cwd, exit_code, duration_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO terminal_commands (id, workspace_profile_id, command, cwd, exit_code, duration_ms, stdout_preview, stdout_size_bytes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             id,
             profile_id,
@@ -326,6 +328,8 @@ pub fn insert_terminal_command(
             cwd,
             exit_code,
             duration_ms.map(|d| d as i64),
+            output,
+            size_bytes,
         ],
     )?;
     Ok(id)
