@@ -100,10 +100,16 @@ function XtermInstance(props: XtermInstanceProps) {
     });
 
     // Resize observer for fit
+    let resizeTimeout: number | undefined;
     resizeObserver = new ResizeObserver(() => {
-      if (!fitAddon || !terminal) return;
-      fitAddon.fit();
-      ptyResize(props.sessionId, terminal.cols, terminal.rows);
+      if (resizeTimeout) clearTimeout(resizeTimeout);
+      resizeTimeout = window.setTimeout(() => {
+        if (!fitAddon || !terminal) return;
+        fitAddon.fit();
+        ptyResize(props.sessionId, terminal.cols, terminal.rows).catch((e) => {
+          console.error('Failed to resize PTY:', e);
+        });
+      }, 100);
     });
     resizeObserver.observe(containerRef);
   });
