@@ -227,6 +227,20 @@ pub fn get_active_profile_id(conn: &Connection) -> Result<Option<String>> {
     }
 }
 
+/// Get the watched directories for the active profile
+pub fn get_active_profile_watched_directories(conn: &Connection) -> Result<Option<Vec<String>>> {
+    let mut stmt = conn.prepare("SELECT watched_directories FROM workspace_profiles WHERE is_active = TRUE LIMIT 1")?;
+    let mut rows = stmt.query([])?;
+    match rows.next()? {
+        Some(row) => {
+            let json_str: String = row.get(0)?;
+            let dirs: Vec<String> = serde_json::from_str(&json_str).unwrap_or_default();
+            Ok(Some(dirs))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Get the stored content hash for a file. Returns None if file is not indexed.
 pub fn get_file_hash(conn: &Connection, file_path: &str, profile_id: &str) -> Result<Option<String>> {
     let mut stmt = conn.prepare(
