@@ -100,6 +100,20 @@ fn process_file_with_events(app_handle: AppHandle, path: PathBuf) {
         let file_path_str = path.to_string_lossy().to_string();
 
         // 1. Read content and compute hash
+        let metadata = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(e) => {
+                log::error!("Failed to get metadata for {:?}: {}", path, e);
+                return;
+            }
+        };
+
+        // Skip files larger than 5MB to avoid memory pressure
+        if metadata.len() > 5 * 1024 * 1024 {
+            log::warn!("Skipping large file ({:.2} MB): {:?}", metadata.len() as f64 / 1024.0 / 1024.0, path);
+            return;
+        }
+
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {

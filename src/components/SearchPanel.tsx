@@ -94,7 +94,7 @@ function SearchPanel() {
             Semantic Search
           </div>
           <kbd class="text-[10px] px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text-secondary)] bg-[var(--color-bg-primary)]">
-            {navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+K
+            {navigator.userAgent.includes('Mac') ? '⌘' : 'Ctrl'}+K
           </kbd>
         </div>
         <div class="flex gap-2 mb-2">

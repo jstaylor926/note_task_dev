@@ -42,7 +42,16 @@ def chunk_text(
     chunk_size: int = 500,
     overlap: int = 50,
 ) -> list[Chunk]:
-    """Split text into overlapping word-window chunks."""
+    """Split text into overlapping word-window chunks.
+
+    Args:
+        text: The input text to chunk.
+        chunk_size: Maximum number of words per chunk.
+        overlap: Number of overlapping words between chunks.
+
+    Returns:
+        A list of Chunk objects.
+    """
     words = text.split()
     if not words:
         return []
@@ -73,14 +82,20 @@ def chunk_text(
 # Node types that represent top-level definitions we want to chunk by
 _CODE_NODE_TYPES: dict[str, set[str]] = {
     "python": {"function_definition", "class_definition"},
-    "javascript": {"function_declaration", "class_declaration", "export_statement",
-                    "lexical_declaration", "variable_declaration"},
-    "typescript": {"function_declaration", "class_declaration", "export_statement",
-                    "lexical_declaration", "variable_declaration", "interface_declaration",
-                    "type_alias_declaration"},
-    "rust": {"function_item", "struct_item", "enum_item", "impl_item",
-             "trait_item", "mod_item", "const_item", "static_item",
-             "type_item"},
+    "javascript": {
+        "function_declaration", "class_declaration", "export_statement",
+        "lexical_declaration", "variable_declaration"
+    },
+    "typescript": {
+        "function_declaration", "class_declaration", "export_statement",
+        "lexical_declaration", "variable_declaration", "interface_declaration",
+        "type_alias_declaration"
+    },
+    "rust": {
+        "function_item", "struct_item", "enum_item", "impl_item",
+        "trait_item", "mod_item", "const_item", "static_item",
+        "type_item"
+    },
 }
 
 # Maps language name to a callable that returns the tree-sitter language capsule
@@ -88,7 +103,14 @@ _TS_LANGUAGES: dict[str, object] = {}
 
 
 def _get_ts_language(lang: str) -> Language | None:
-    """Lazily load and cache tree-sitter language objects."""
+    """Lazily load and cache tree-sitter language objects.
+
+    Args:
+        lang: The language identifier (e.g., 'python', 'rust').
+
+    Returns:
+        A tree_sitter.Language object if found, else None.
+    """
     if lang in _TS_LANGUAGES:
         return _TS_LANGUAGES[lang]
 
@@ -121,15 +143,36 @@ def _get_ts_language(lang: str) -> Language | None:
 
 
 def _extract_name(node, source_bytes: bytes) -> str | None:
-    """Extract the name identifier from an AST node."""
+    """Extract the name identifier from an AST node.
+
+    Args:
+        node: The tree-sitter node to extract from.
+        source_bytes: The original source bytes.
+
+    Returns:
+        The identifier string if found, else None.
+    """
     for child in node.children:
         if child.type == "identifier" or child.type == "type_identifier":
-            return source_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
+            return source_bytes[child.start_byte:child.end_byte].decode(
+                "utf-8", errors="replace"
+            )
     return None
 
 
-def _build_context_header(file_path: str, entity_name: str | None, chunk_type: str) -> str:
-    """Build a context header like 'File: path | Function: name'."""
+def _build_context_header(
+    file_path: str, entity_name: str | None, chunk_type: str
+) -> str:
+    """Build a context header like 'File: path | Function: name'.
+
+    Args:
+        file_path: Path to the file.
+        entity_name: Name of the entity (e.g., function name).
+        chunk_type: Type of the chunk.
+
+    Returns:
+        A formatted context header string.
+    """
     parts = [f"File: {file_path}"]
     if entity_name:
         label = chunk_type.capitalize() if chunk_type != "text" else "Entity"
@@ -138,7 +181,14 @@ def _build_context_header(file_path: str, entity_name: str | None, chunk_type: s
 
 
 def _chunk_type_from_node(node_type: str) -> str:
-    """Map a tree-sitter node type to a human-readable chunk type."""
+    """Map a tree-sitter node type to a human-readable chunk type.
+
+    Args:
+        node_type: The raw tree-sitter node type string.
+
+    Returns:
+        A human-readable chunk type (e.g., 'function', 'class').
+    """
     if "class" in node_type:
         return "class"
     if "function" in node_type or "method" in node_type:
@@ -167,7 +217,14 @@ def chunk_code(
 ) -> list[Chunk] | None:
     """Chunk source code using tree-sitter AST boundaries.
 
-    Returns None if the language is not supported (caller should fall back).
+    Args:
+        source: The source code string.
+        language: The programming language.
+        file_path: Optional path to the file.
+
+    Returns:
+        A list of Chunk objects if successful, else None if the language
+        is not supported or parsing fails.
     """
     ts_lang = _get_ts_language(language)
     if ts_lang is None:
@@ -197,7 +254,11 @@ def chunk_code(
 
     # Collect preamble (imports, comments before first definition)
     first_start = definition_nodes[0].start_byte
-    preamble = source_bytes[:first_start].decode("utf-8", errors="replace").strip()
+    preamble = (
+        source_bytes[:first_start]
+        .decode("utf-8", errors="replace")
+        .strip()
+    )
 
     chunk_index = 0
 
@@ -213,7 +274,10 @@ def chunk_code(
         chunk_index += 1
 
     for node in definition_nodes:
-        node_text = source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        node_text = (
+            source_bytes[node.start_byte:node.end_byte]
+            .decode("utf-8", errors="replace")
+        )
         entity_name = _extract_name(node, source_bytes)
         ctype = _chunk_type_from_node(node.type)
         start_line = node.start_point[0] + 1  # 1-indexed
@@ -228,7 +292,9 @@ def chunk_code(
                 sc.end_line = end_line
                 sc.entity_name = entity_name
                 sc.chunk_type = ctype
-                sc.context_header = _build_context_header(file_path, entity_name, ctype)
+                sc.context_header = _build_context_header(
+                    file_path, entity_name, ctype
+                )
                 chunks.append(sc)
                 chunk_index += 1
         else:
@@ -239,7 +305,9 @@ def chunk_code(
                 end_line=end_line,
                 entity_name=entity_name,
                 chunk_type=ctype,
-                context_header=_build_context_header(file_path, entity_name, ctype),
+                context_header=_build_context_header(
+                    file_path, entity_name, ctype
+                ),
             ))
             chunk_index += 1
 
@@ -251,7 +319,15 @@ def chunk_code(
 # ---------------------------------------------------------------------------
 
 def chunk_markdown(source: str, file_path: str = "") -> list[Chunk]:
-    """Chunk Markdown by heading boundaries."""
+    """Chunk Markdown by heading boundaries.
+
+    Args:
+        source: The Markdown source string.
+        file_path: Optional path to the file.
+
+    Returns:
+        A list of Chunk objects split by headings.
+    """
     lines = source.splitlines(keepends=True)
     if not lines:
         return []
@@ -299,7 +375,15 @@ def chunk_markdown(source: str, file_path: str = "") -> list[Chunk]:
 # ---------------------------------------------------------------------------
 
 def chunk_config(source: str, file_path: str = "") -> list[Chunk]:
-    """Chunk config files by top-level keys (simple line-based heuristic)."""
+    """Chunk config files by top-level keys.
+
+    Args:
+        source: The config file source string.
+        file_path: Optional path to the file.
+
+    Returns:
+        A list of Chunk objects split by top-level keys.
+    """
     lines = source.splitlines(keepends=True)
     if not lines:
         return []
@@ -312,11 +396,24 @@ def chunk_config(source: str, file_path: str = "") -> list[Chunk]:
     for i, line in enumerate(lines):
         stripped = line.rstrip()
         # Top-level key: starts at column 0, not a comment, not blank
-        if stripped and not stripped[0].isspace() and not stripped.startswith("#") and not stripped.startswith("//"):
+        is_top_level = (
+            stripped
+            and not stripped[0].isspace()
+            and not stripped.startswith("#")
+            and not stripped.startswith("//")
+        )
+        if is_top_level:
             if current_lines and current_key is not None:
                 sections.append((current_key, current_start, current_lines))
             # Extract key name (before : or =)
-            key = stripped.split(":")[0].split("=")[0].strip().strip("[]").strip('"').strip("'")
+            key = (
+                stripped.split(":")[0]
+                .split("=")[0]
+                .strip()
+                .strip("[]")
+                .strip('"')
+                .strip("'")
+            )
             current_key = key
             current_start = i + 1
             current_lines = [line]
@@ -361,6 +458,14 @@ def chunk_file(
     """Route to the best chunking strategy for the given language.
 
     Falls back to word-window chunking if no specialized strategy applies.
+
+    Args:
+        content: The full content of the file.
+        language: The detected programming language.
+        file_path: Optional path to the file.
+
+    Returns:
+        A list of Chunk objects.
     """
     if not content.strip():
         return []

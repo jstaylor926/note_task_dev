@@ -1,10 +1,10 @@
-import EditorPanel from "../components/EditorPanel";
-import TerminalPanel from "../components/TerminalPanel";
-import NotesPanel from "../components/NotesPanel";
-import ChatPanel from "../components/ChatPanel";
-import TaskPanel from "../components/TaskPanel";
-import IndexingStatus from "../components/IndexingStatus";
-import SearchPanel from "../components/SearchPanel";
+import EditorPanel from '../components/EditorPanel';
+import TerminalPanel from '../components/TerminalPanel';
+import NotesPanel from '../components/NotesPanel';
+import ChatPanel from '../components/ChatPanel';
+import TaskPanel from '../components/TaskPanel';
+import IndexingStatus from '../components/IndexingStatus';
+import SearchPanel from '../components/SearchPanel';
 
 function WorkspaceLayout() {
   return (

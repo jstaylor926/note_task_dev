@@ -41,7 +41,11 @@ def get_lancedb_schema() -> pa.Schema:
 
 
 def get_data_dir() -> Path:
-    """Resolve the application data directory (platform-aware)."""
+    """Resolve the application data directory (platform-aware).
+
+    Returns:
+        Path object pointing to the application data directory.
+    """
     # Check for explicit override via environment variable
     env_dir = os.environ.get("CORTEX_DATA_DIR")
     if env_dir:
@@ -49,10 +53,15 @@ def get_data_dir() -> Path:
 
     # macOS: ~/Library/Application Support/com.cortex.app
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "com.cortex.app"
+        return (
+            Path.home() / "Library" / "Application Support" / "com.cortex.app"
+        )
     # Linux: ~/.local/share/com.cortex.app
     elif sys.platform == "linux":
-        return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "com.cortex.app"
+        return (
+            Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+            / "com.cortex.app"
+        )
     # Windows: %APPDATA%/com.cortex.app
     else:
         return Path(os.environ.get("APPDATA", Path.home())) / "com.cortex.app"
@@ -81,7 +90,11 @@ class SearchRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize LanceDB and Embedding model on startup."""
+    """Initialize LanceDB and Embedding model on startup.
+
+    Args:
+        app: The FastAPI application instance.
+    """
     data_dir = get_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -119,17 +132,28 @@ app.include_router(health_router)
 
 @app.post("/embed")
 async def embed_text(req: EmbedRequest):
+    """Embed a single piece of text and store it in LanceDB.
+
+    Args:
+        req: The EmbedRequest containing text and optional metadata.
+
+    Returns:
+        A dictionary with status and the generated entity_id.
+
+    Raises:
+        HTTPException: If embedding or storage fails.
+    """
     try:
         if app.state.model:
             vector = app.state.model.encode(req.text).tolist()
         else:
             # Mock vector for tests
             vector = [0.1] * 384
-        
+
         table = app.state.lancedb.open_table("embeddings")
-        
+
         metadata = req.metadata or {}
-        
+
         record = {
             "vector": vector,
             "text": req.text,
@@ -140,20 +164,31 @@ async def embed_text(req: EmbedRequest):
             "chunk_index": metadata.get("chunk_index", 0),
             "language": metadata.get("language", "text"),
             "git_branch": metadata.get("git_branch", "main"),
-            "token_count": len(req.text.split()), # Rough estimate
+            "token_count": len(req.text.split()),  # Rough estimate
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
         }
-        
+
         table.add([record])
         return {"status": "success", "entity_id": record["entity_id"]}
     except Exception as e:
         logger.error("Embedding failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/ingest")
 async def ingest_file(req: IngestRequest):
-    """Ingest a full file: chunk, embed, and store in one pass."""
+    """Ingest a full file: chunk, embed, and store in one pass.
+
+    Args:
+        req: The IngestRequest containing file content and metadata.
+
+    Returns:
+        A dictionary with chunk_count and a list of extracted entities.
+
+    Raises:
+        HTTPException: If ingestion fails.
+    """
     try:
         chunks = chunk_file(req.content, req.language, file_path=req.file_path)
         if not chunks:
@@ -190,7 +225,14 @@ async def ingest_file(req: IngestRequest):
                 "updated_at": now,
             })
 
-            if chunk.entity_name and chunk.chunk_type in ("function", "class", "struct", "enum", "trait", "impl", "interface"):
+            is_named_entity = (
+                chunk.entity_name
+                and chunk.chunk_type in (
+                    "function", "class", "struct", "enum", "trait", "impl",
+                    "interface"
+                )
+            )
+            if is_named_entity:
                 entities.append({
                     "name": chunk.entity_name,
                     "type": chunk.chunk_type,
@@ -199,7 +241,10 @@ async def ingest_file(req: IngestRequest):
                 })
 
         table.add(records)
-        logger.info("Ingested %d chunks from %s (%d entities)", len(records), req.file_path, len(entities))
+        logger.info(
+            "Ingested %d chunks from %s (%d entities)",
+            len(records), req.file_path, len(entities)
+        )
         return {"chunk_count": len(records), "entities": entities}
     except Exception as e:
         logger.error("Ingest failed for %s: %s", req.file_path, e)
@@ -207,7 +252,17 @@ async def ingest_file(req: IngestRequest):
 
 @app.delete("/embeddings")
 async def delete_embeddings(source_file: str):
-    """Delete all embeddings for a given source file."""
+    """Delete all embeddings for a given source file.
+
+    Args:
+        source_file: The path of the file to delete embeddings for.
+
+    Returns:
+        A dictionary with status and the source_file.
+
+    Raises:
+        HTTPException: If deletion fails.
+    """
     try:
         table = app.state.lancedb.open_table("embeddings")
         table.delete(f"source_file = '{source_file}'")
@@ -216,6 +271,7 @@ async def delete_embeddings(source_file: str):
     except Exception as e:
         logger.error("Delete failed for %s: %s", source_file, e)
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/search")
 async def search_embeddings(
@@ -226,6 +282,22 @@ async def search_embeddings(
     chunk_type: Optional[str] = None,
     file_path_prefix: Optional[str] = None,
 ):
+    """Search for similar embeddings in LanceDB.
+
+    Args:
+        query: The natural language search query.
+        limit: Maximum number of results to return.
+        language: Filter by programming language.
+        source_type: Filter by source type (code, docs, etc.).
+        chunk_type: Filter by chunk type (function, class, etc.).
+        file_path_prefix: Filter by file path prefix.
+
+    Returns:
+        A dictionary with search results and the original query.
+
+    Raises:
+        HTTPException: If search fails.
+    """
     try:
         if app.state.model:
             vector = app.state.model.encode(query).tolist()
