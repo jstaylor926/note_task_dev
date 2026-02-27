@@ -87,6 +87,7 @@ function TerminalPanel() {
               activePaneId={state.activePaneId}
               onFocusPane={setActivePaneId}
               onResizeSplit={resizeSplit}
+              onExit={(paneId) => closePane(tab().id, paneId)}
             />
           )}
         </Show>

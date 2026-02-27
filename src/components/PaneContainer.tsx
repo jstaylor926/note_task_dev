@@ -8,6 +8,7 @@ interface PaneContainerProps {
   activePaneId: string | null;
   onFocusPane: (paneId: string) => void;
   onResizeSplit?: (splitId: string, sizes: number[]) => void;
+  onExit?: (paneId: string, exitCode: number | null) => void;
 }
 
 function PaneContainer(props: PaneContainerProps) {
@@ -27,6 +28,7 @@ function PaneContainer(props: PaneContainerProps) {
               <XtermInstance
                 sessionId={pane.sessionId}
                 onFocus={() => props.onFocusPane(pane.id)}
+                onExit={(code) => props.onExit?.(pane.id, code)}
               />
             </div>
           );
@@ -43,6 +45,7 @@ function PaneContainer(props: PaneContainerProps) {
               activePaneId={props.activePaneId}
               onFocusPane={props.onFocusPane}
               onResizeSplit={props.onResizeSplit}
+              onExit={props.onExit}
             >
               {split.children}
             </SplitContainer>

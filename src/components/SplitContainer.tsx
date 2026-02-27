@@ -10,6 +10,7 @@ interface SplitContainerProps {
   activePaneId: string | null;
   onFocusPane: (paneId: string) => void;
   onResizeSplit?: (splitId: string, sizes: number[]) => void;
+  onExit?: (paneId: string, exitCode: number | null) => void;
 }
 
 function SplitContainer(props: SplitContainerProps) {
@@ -97,6 +98,7 @@ function SplitContainer(props: SplitContainerProps) {
                 activePaneId={props.activePaneId}
                 onFocusPane={props.onFocusPane}
                 onResizeSplit={props.onResizeSplit}
+                onExit={props.onExit}
               />
             </div>
             {index() < props.children.length - 1 && (
