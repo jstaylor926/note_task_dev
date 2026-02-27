@@ -9,11 +9,11 @@ This plan outlines the steps to implement the core file ingestion and semantic s
     - [x] Implement LanceDB setup and schema definition in `sidecar/cortex_sidecar/main.py`
     - [x] Verify table persistence across sidecar restarts
 
-- [ ] **Task: Sidecar - Create embedding and search API endpoints**
-    - [ ] Write tests for `/embed` and `/search` endpoints
-    - [ ] Implement chunk embedding logic (using a lightweight model like `all-MiniLM-L6-v2`)
-    - [ ] Implement vector search logic against the LanceDB table
-    - [ ] Verify endpoint responses with mock data
+- [x] **Task: Sidecar - Create embedding and search API endpoints** a981b0d
+    - [x] Write tests for `/embed` and `/search` endpoints
+    - [x] Implement chunk embedding logic (using a lightweight model like `all-MiniLM-L6-v2`)
+    - [x] Implement vector search logic against the LanceDB table
+    - [x] Verify endpoint responses with mock data
 
 - [ ] **Task: Conductor - User Manual Verification 'Phase 1: Sidecar Foundation' (Protocol in workflow.md)**
 
