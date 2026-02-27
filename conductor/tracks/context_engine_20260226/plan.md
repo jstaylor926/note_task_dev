@@ -2,7 +2,7 @@
 
 This plan outlines the steps to implement the core file ingestion and semantic search pipeline for Cortex.
 
-## Phase 1: Sidecar Foundation & Vector DB
+## Phase 1: Sidecar Foundation & Vector DB [checkpoint: 5fa715c]
 
 - [x] **Task: Sidecar - Implement LanceDB initialization and schema management** 76dc887
     - [x] Write tests for LanceDB connection and table creation in `sidecar/tests/`
@@ -15,7 +15,7 @@ This plan outlines the steps to implement the core file ingestion and semantic s
     - [x] Implement vector search logic against the LanceDB table
     - [x] Verify endpoint responses with mock data
 
-- [~] **Task: Conductor - User Manual Verification 'Phase 1: Sidecar Foundation' (Protocol in workflow.md)**
+- [x] **Task: Conductor - User Manual Verification 'Phase 1: Sidecar Foundation' (Protocol in workflow.md)** 5fa715c
 
 ## Phase 2: Rust File Watcher & Ingestion
 
