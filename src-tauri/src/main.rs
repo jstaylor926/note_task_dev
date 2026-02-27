@@ -3,6 +3,7 @@
 
 mod commands;
 mod db;
+mod events;
 mod sidecar;
 mod watcher;
 mod ingest;
@@ -10,10 +11,31 @@ mod ingest;
 use std::sync::Mutex;
 use tauri::Manager;
 
+pub struct IndexingState {
+    pub total_queued: usize,
+    pub completed: usize,
+    pub current_file: Option<String>,
+}
+
+impl IndexingState {
+    pub fn new() -> Self {
+        Self {
+            total_queued: 0,
+            completed: 0,
+            current_file: None,
+        }
+    }
+
+    pub fn is_idle(&self) -> bool {
+        self.completed >= self.total_queued
+    }
+}
+
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
     pub sidecar_manager: Mutex<sidecar::SidecarManager>,
     pub sidecar_url: String,
+    pub indexing: Mutex<IndexingState>,
 }
 
 fn main() {
@@ -68,6 +90,7 @@ fn main() {
                 db: Mutex::new(conn),
                 sidecar_manager: Mutex::new(sidecar_manager),
                 sidecar_url: sidecar_url.clone(),
+                indexing: Mutex::new(IndexingState::new()),
             };
             app.manage(state);
 
@@ -79,7 +102,10 @@ fn main() {
             ));
 
             // 7. Start file watcher on project root
-            let project_root = std::env::current_dir().expect("failed to get current dir");
+            let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("failed to resolve project root")
+                .to_path_buf();
             tauri::async_runtime::spawn(watcher::start_watcher(
                 app_handle,
                 project_root,
@@ -90,6 +116,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::health_check,
             commands::get_app_status,
+            commands::semantic_search,
+            commands::get_indexing_status,
         ])
         .build(tauri::generate_context!())
         .expect("error building cortex")

@@ -34,10 +34,17 @@ This plan outlines the steps to implement the core file ingestion and semantic s
 
 ## Phase 3: Integration & UI
 
-- [ ] **Task: Frontend - Implement indexing status and search UI**
-    - [ ] Write tests for the `IndexingStatus` component
-    - [ ] Implement a status indicator in the `WorkspaceLayout` (e.g., "Indexing 45/100 files")
-    - [ ] Create a basic semantic search input that queries the sidecar via Tauri commands
-    - [ ] Display search results with source file references
+- [~] **Task: Frontend - Implement indexing status and search UI**
+    - [x] Add Rust event types (`events.rs`) and indexing state tracking in `AppState`
+    - [x] Wire indexing events into file watcher (`watcher.rs`) via `app_handle.emit()`
+    - [x] Add `semantic_search` and `get_indexing_status` Tauri commands (`commands.rs`)
+    - [x] Extend frontend Tauri API layer with types, search fn, and event listeners (`lib/tauri.ts`)
+    - [x] Set up Vitest test framework with SolidJS testing library
+    - [x] Write tests for the `IndexingStatus` component (5 tests)
+    - [x] Write tests for the `SearchPanel` component (6 tests)
+    - [x] Implement `IndexingStatus` component with idle/active states in header bar
+    - [x] Implement `SearchPanel` component with search form and results display
+    - [x] Wire components into `WorkspaceLayout` (header + right sidebar)
+    - [ ] All 11 frontend tests pass, all 8 Rust tests pass
 
 - [ ] **Task: Conductor - User Manual Verification 'Phase 3: Integration & UI' (Protocol in workflow.md)**

@@ -10,6 +10,7 @@ import pyarrow as pa
 import uvicorn
 from fastapi import FastAPI
 
+from cortex_sidecar.chunking import chunk_text
 from cortex_sidecar.routes.health import router as health_router
 
 logging.basicConfig(
@@ -66,6 +67,13 @@ import uuid
 class EmbedRequest(BaseModel):
     text: str
     metadata: Optional[Dict[str, Any]] = None
+
+class IngestRequest(BaseModel):
+    file_path: str
+    content: str
+    language: str = "text"
+    source_type: str = "unknown"
+    git_branch: str = "main"
 
 class SearchRequest(BaseModel):
     query: str
@@ -141,6 +149,58 @@ async def embed_text(req: EmbedRequest):
         return {"status": "success", "entity_id": record["entity_id"]}
     except Exception as e:
         logger.error("Embedding failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/ingest")
+async def ingest_file(req: IngestRequest):
+    """Ingest a full file: chunk, embed, and store in one pass."""
+    try:
+        chunks = chunk_text(req.content)
+        if not chunks:
+            return {"chunk_count": 0, "entities": []}
+
+        table = app.state.lancedb.open_table("embeddings")
+        now = datetime.now().isoformat()
+        records = []
+
+        for chunk in chunks:
+            if app.state.model:
+                vector = app.state.model.encode(chunk.text).tolist()
+            else:
+                vector = [0.1] * 384
+
+            records.append({
+                "vector": vector,
+                "text": chunk.text,
+                "source_type": req.source_type,
+                "source_file": req.file_path,
+                "entity_id": str(uuid.uuid4()),
+                "chunk_type": chunk.chunk_type,
+                "chunk_index": chunk.index,
+                "language": req.language,
+                "git_branch": req.git_branch,
+                "token_count": len(chunk.text.split()),
+                "created_at": now,
+                "updated_at": now,
+            })
+
+        table.add(records)
+        logger.info("Ingested %d chunks from %s", len(records), req.file_path)
+        return {"chunk_count": len(records), "entities": []}
+    except Exception as e:
+        logger.error("Ingest failed for %s: %s", req.file_path, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/embeddings")
+async def delete_embeddings(source_file: str):
+    """Delete all embeddings for a given source file."""
+    try:
+        table = app.state.lancedb.open_table("embeddings")
+        table.delete(f"source_file = '{source_file}'")
+        logger.info("Deleted embeddings for %s", source_file)
+        return {"status": "success", "source_file": source_file}
+    except Exception as e:
+        logger.error("Delete failed for %s: %s", source_file, e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/search")

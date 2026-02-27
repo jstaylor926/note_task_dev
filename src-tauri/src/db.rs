@@ -217,6 +217,61 @@ pub fn initialize(db_path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Get the active workspace profile ID. Returns None if no active profile exists.
+pub fn get_active_profile_id(conn: &Connection) -> Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM workspace_profiles WHERE is_active = TRUE LIMIT 1")?;
+    let mut rows = stmt.query([])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(row.get(0)?)),
+        None => Ok(None),
+    }
+}
+
+/// Get the stored content hash for a file. Returns None if file is not indexed.
+pub fn get_file_hash(conn: &Connection, file_path: &str, profile_id: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT content_hash FROM file_index WHERE file_path = ?1 AND workspace_profile_id = ?2",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![file_path, profile_id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(row.get(0)?)),
+        None => Ok(None),
+    }
+}
+
+/// Insert or update the file_index entry for a file.
+pub fn upsert_file_index(
+    conn: &Connection,
+    file_path: &str,
+    profile_id: &str,
+    content_hash: &str,
+    language: &str,
+    chunk_count: usize,
+    file_size: u64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO file_index (file_path, workspace_profile_id, content_hash, language, chunk_count, file_size_bytes, last_indexed)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP)
+         ON CONFLICT(file_path, workspace_profile_id) DO UPDATE SET
+           content_hash = excluded.content_hash,
+           language = excluded.language,
+           chunk_count = excluded.chunk_count,
+           file_size_bytes = excluded.file_size_bytes,
+           last_indexed = CURRENT_TIMESTAMP",
+        rusqlite::params![file_path, profile_id, content_hash, language, chunk_count as i64, file_size as i64],
+    )?;
+    Ok(())
+}
+
+/// Delete the file_index entry for a file.
+pub fn delete_file_index(conn: &Connection, file_path: &str, profile_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM file_index WHERE file_path = ?1 AND workspace_profile_id = ?2",
+        rusqlite::params![file_path, profile_id],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +295,45 @@ mod tests {
         let conn = initialize(Path::new(":memory:")).unwrap();
         // Re-run schema creation — should not error
         conn.execute_batch(SCHEMA_SQL).unwrap();
+    }
+
+    #[test]
+    fn test_get_active_profile_id() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let profile_id = get_active_profile_id(&conn).unwrap();
+        assert!(profile_id.is_some());
+    }
+
+    #[test]
+    fn test_file_index_crud() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let profile_id = get_active_profile_id(&conn).unwrap().unwrap();
+
+        // Initially no hash
+        let hash = get_file_hash(&conn, "src/main.rs", &profile_id).unwrap();
+        assert!(hash.is_none());
+
+        // Upsert
+        upsert_file_index(&conn, "src/main.rs", &profile_id, "abc123", "rust", 5, 1024).unwrap();
+        let hash = get_file_hash(&conn, "src/main.rs", &profile_id).unwrap();
+        assert_eq!(hash.as_deref(), Some("abc123"));
+
+        // Update with new hash
+        upsert_file_index(&conn, "src/main.rs", &profile_id, "def456", "rust", 7, 2048).unwrap();
+        let hash = get_file_hash(&conn, "src/main.rs", &profile_id).unwrap();
+        assert_eq!(hash.as_deref(), Some("def456"));
+
+        // Delete
+        delete_file_index(&conn, "src/main.rs", &profile_id).unwrap();
+        let hash = get_file_hash(&conn, "src/main.rs", &profile_id).unwrap();
+        assert!(hash.is_none());
+    }
+
+    #[test]
+    fn test_delete_file_index_nonexistent() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let profile_id = get_active_profile_id(&conn).unwrap().unwrap();
+        // Should succeed even if the file doesn't exist
+        delete_file_index(&conn, "nonexistent.rs", &profile_id).unwrap();
     }
 }
