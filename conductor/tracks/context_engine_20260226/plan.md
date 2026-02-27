@@ -19,10 +19,10 @@ This plan outlines the steps to implement the core file ingestion and semantic s
 
 ## Phase 2: Rust File Watcher & Ingestion
 
-- [ ] **Task: Rust - Implement file watcher using the `notify` crate**
-    - [ ] Write tests for file event detection (Add, Modify, Delete)
-    - [ ] Implement `FileWatcher` module in `src-tauri/src/watcher.rs`
-    - [ ] Integrate watcher with the main Tauri setup to monitor the workspace directory
+- [x] **Task: Rust - Implement file watcher using the `notify` crate** b3d0c74
+    - [x] Write tests for file event detection (Add, Modify, Delete)
+    - [x] Implement `FileWatcher` module in `src-tauri/src/watcher.rs`
+    - [x] Integrate watcher with the main Tauri setup to monitor the workspace directory
 
 - [ ] **Task: Rust - Implement basic text chunking and ingestion trigger**
     - [ ] Write tests for text chunking logic
