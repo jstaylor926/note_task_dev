@@ -143,6 +143,29 @@ impl PtyManager {
                                 OscEvent::CommandStart => {
                                     command_start_time = Some(std::time::Instant::now());
                                     command_output = Some(Vec::new());
+                                    
+                                    let cmd_for_monitor = current_command.clone().unwrap_or_default();
+                                    let session_id_for_monitor = session_id.clone();
+                                    let app_handle_for_monitor = app_handle.clone();
+                                    
+                                    // Basic heuristic: notify if command takes longer than 30s
+                                    tauri::async_runtime::spawn(async move {
+                                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                                        // This is a naive implementation. A better one would check if the command
+                                        // has already completed. Since we don't have a reliable way to cancel this
+                                        // task from the reader thread easily without adding channels per command,
+                                        // we'll just let the frontend handle deduplication or ignore if already ended.
+                                        let _ = app_handle_for_monitor.emit(
+                                            crate::events::TERMINAL_PIPELINE_STATUS,
+                                            crate::events::TerminalPipelineStatusPayload {
+                                                session_id: session_id_for_monitor,
+                                                command: cmd_for_monitor,
+                                                status: "running".to_string(),
+                                                duration_ms: 30000,
+                                            }
+                                        );
+                                    });
+
                                     let _ = app_handle.emit(
                                         TERMINAL_COMMAND_START,
                                         TerminalCommandStartPayload {
@@ -159,6 +182,22 @@ impl PtyManager {
                                     let output_str = command_output.take().and_then(|bytes| {
                                         String::from_utf8(bytes).ok()
                                     });
+                                    
+                                    if let Some(ms) = duration_ms {
+                                        if ms >= 30000 {
+                                            let status = if *exit_code == Some(0) { "completed" } else { "failed" };
+                                            let _ = app_handle.emit(
+                                                crate::events::TERMINAL_PIPELINE_STATUS,
+                                                crate::events::TerminalPipelineStatusPayload {
+                                                    session_id: session_id.clone(),
+                                                    command: current_command.clone().unwrap_or_default(),
+                                                    status: status.to_string(),
+                                                    duration_ms: ms,
+                                                }
+                                            );
+                                        }
+                                    }
+
                                     let _ = app_handle.emit(
                                         TERMINAL_COMMAND_END,
                                         TerminalCommandEndPayload {

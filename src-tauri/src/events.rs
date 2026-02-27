@@ -9,6 +9,7 @@ pub const PTY_OUTPUT: &str = "pty:output";
 pub const PTY_EXIT: &str = "pty:exit";
 pub const TERMINAL_COMMAND_START: &str = "terminal:command-start";
 pub const TERMINAL_COMMAND_END: &str = "terminal:command-end";
+pub const TERMINAL_PIPELINE_STATUS: &str = "terminal:pipeline-status";
 
 #[derive(Clone, Serialize)]
 pub struct IndexingProgressPayload {
@@ -65,6 +66,14 @@ pub struct TerminalCommandEndPayload {
     pub cwd: Option<String>,
     pub duration_ms: Option<u64>,
     pub output: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TerminalPipelineStatusPayload {
+    pub session_id: String,
+    pub command: String,
+    pub status: String, // "running", "completed", "failed"
+    pub duration_ms: u64,
 }
 
 #[cfg(test)]
