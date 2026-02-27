@@ -15,7 +15,7 @@ This plan outlines the steps to implement the core file ingestion and semantic s
     - [x] Implement vector search logic against the LanceDB table
     - [x] Verify endpoint responses with mock data
 
-- [ ] **Task: Conductor - User Manual Verification 'Phase 1: Sidecar Foundation' (Protocol in workflow.md)**
+- [~] **Task: Conductor - User Manual Verification 'Phase 1: Sidecar Foundation' (Protocol in workflow.md)**
 
 ## Phase 2: Rust File Watcher & Ingestion
 
