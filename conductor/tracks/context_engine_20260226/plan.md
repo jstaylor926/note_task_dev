@@ -24,11 +24,11 @@ This plan outlines the steps to implement the core file ingestion and semantic s
     - [x] Implement `FileWatcher` module in `src-tauri/src/watcher.rs`
     - [x] Integrate watcher with the main Tauri setup to monitor the workspace directory
 
-- [ ] **Task: Rust - Implement basic text chunking and ingestion trigger**
-    - [ ] Write tests for text chunking logic
-    - [ ] Implement a simple sliding window or paragraph-based chunker in Rust
-    - [ ] Implement the trigger logic to send new/modified chunks to the Python sidecar
-    - [ ] Verify that file events correctly trigger sidecar requests
+- [x] **Task: Rust - Implement basic text chunking and ingestion trigger** 862ce97
+    - [x] Write tests for text chunking logic
+    - [x] Implement a simple sliding window or paragraph-based chunker in Rust
+    - [x] Implement the trigger logic to send new/modified chunks to the Python sidecar
+    - [x] Verify that file events correctly trigger sidecar requests
 
 - [ ] **Task: Conductor - User Manual Verification 'Phase 2: Rust File Watcher' (Protocol in workflow.md)**
 
