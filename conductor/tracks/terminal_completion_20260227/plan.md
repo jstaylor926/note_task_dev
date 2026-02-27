@@ -14,28 +14,28 @@
     - [x] Update frontend `ptyCreate` wrapper and `XtermInstance` to pass current dimensions.
 - [x] **Task: Conductor - User Manual Verification 'Phase 1: Critical Fixes' (Protocol in workflow.md)** e237ea0
 
-## Phase 2: Infrastructure & Plumbing (Tier 2)
-- [ ] **Task: Wire Command Persistence to SQLite**
-    - [ ] Listen for `terminal:command-end` events in `main.rs`.
-    - [ ] Call `db::insert_terminal_command()` to persist the command.
-    - [ ] Remove `#[allow(dead_code)]` from `db.rs` for the insertion function.
-- [ ] **Task: Debounce Terminal Resize**
-    - [ ] Add 100ms debounce to the `ResizeObserver` callback in `XtermInstance.tsx`.
-- [ ] **Task: Persist Split Container Sizes**
-    - [ ] Update `SplitContainer.tsx` to write resized dimensions back to the `terminalState` store.
-    - [ ] Ensure `localSizes` re-initializes from the store correctly.
-- [ ] **Task: Implement OSC Buffer Limit**
-    - [ ] Add a 64KB constant limit to `osc_parser.rs`.
-    - [ ] If the buffer exceeds this limit, discard and reset to `State::Normal`.
-- [ ] **Task: Handle `ptyWrite` Errors**
-    - [ ] Add `.catch()` to the `ptyWrite` call in `XtermInstance.tsx`.
-    - [ ] Show a toast or console error for failed writes.
-- [ ] **Task: Wire `onExit` Prop**
-    - [ ] Ensure `PaneContainer` passes the `onExit` callback to `XtermInstance`.
-- [ ] **Task: Conductor - User Manual Verification 'Phase 2: Infrastructure & Plumbing' (Protocol in workflow.md)**
+## Phase 2: Infrastructure & Plumbing (Tier 2) [checkpoint: 6d6c1d2]
+- [x] **Task: Wire Command Persistence to SQLite** bd889f8
+    - [x] Listen for `terminal:command-end` events in `main.rs`.
+    - [x] Call `db::insert_terminal_command()` to persist the command.
+    - [x] Remove `#[allow(dead_code)]` from `db.rs` for the insertion function.
+- [x] **Task: Debounce Terminal Resize** 642bb13
+    - [x] Add 100ms debounce to the `ResizeObserver` callback in `XtermInstance.tsx`.
+- [x] **Task: Persist Split Container Sizes** a624bc5
+    - [x] Update `SplitContainer.tsx` to write resized dimensions back to the `terminalState` store.
+    - [x] Ensure `localSizes` re-initializes from the store correctly.
+- [x] **Task: Implement OSC Buffer Limit** 5d0bb8e
+    - [x] Add a 64KB constant limit to `osc_parser.rs`.
+    - [x] If the buffer exceeds this limit, discard and reset to `State::Normal`.
+- [x] **Task: Handle `ptyWrite` Errors** c4d84c9
+    - [x] Add `.catch()` to the `ptyWrite` call in `XtermInstance.tsx`.
+    - [x] Show a toast or console error for failed writes.
+- [x] **Task: Wire `onExit` Prop** cf415d3
+    - [x] Ensure `PaneContainer` passes the `onExit` callback to `XtermInstance`.
+- [x] **Task: Conductor - User Manual Verification 'Phase 2: Infrastructure & Plumbing' (Protocol in workflow.md)** 6d6c1d2
 
 ## Phase 3: Intelligence Layer (Tier 3)
-- [ ] **Task: Capture and Store Terminal Output**
+- [~] **Task: Capture and Store Terminal Output**
     - [ ] Update `PtyManager` or the reader thread to buffer output between `CommandStart` and `CommandEnd` events.
     - [ ] Store this output in the SQLite `terminal_commands` table.
 - [ ] **Task: Implement Output Embedding**
