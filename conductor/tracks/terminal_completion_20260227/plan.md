@@ -34,20 +34,20 @@
     - [x] Ensure `PaneContainer` passes the `onExit` callback to `XtermInstance`.
 - [x] **Task: Conductor - User Manual Verification 'Phase 2: Infrastructure & Plumbing' (Protocol in workflow.md)** 6d6c1d2
 
-## Phase 3: Intelligence Layer (Tier 3)
-- [~] **Task: Capture and Store Terminal Output**
-    - [ ] Update `PtyManager` or the reader thread to buffer output between `CommandStart` and `CommandEnd` events.
-    - [ ] Store this output in the SQLite `terminal_commands` table.
-- [ ] **Task: Implement Output Embedding**
-    - [ ] Add logic to check if captured output is > 500 characters.
-    - [ ] If so, chunk and send to the sidecar's `/ingest` endpoint.
-- [ ] **Task: Add Pipeline Monitoring**
-    - [ ] Implement a basic heuristic to detect commands running > 30 seconds.
-    - [ ] Emit a frontend event/notification when a long-running command completes or fails.
-- [ ] **Task: Conductor - User Manual Verification 'Phase 3: Intelligence Layer' (Protocol in workflow.md)**
+## Phase 3: Intelligence Layer (Tier 3) [checkpoint: 44bed55]
+- [x] **Task: Capture and Store Terminal Output** d65994f
+    - [x] Update `PtyManager` or the reader thread to buffer output between `CommandStart` and `CommandEnd` events.
+    - [x] Store this output in the SQLite `terminal_commands` table.
+- [x] **Task: Implement Output Embedding** b60fae4
+    - [x] Add logic to check if captured output is > 500 characters.
+    - [x] If so, chunk and send to the sidecar's `/ingest` endpoint.
+- [x] **Task: Add Pipeline Monitoring** fb90ee8
+    - [x] Implement a basic heuristic to detect commands running > 30 seconds.
+    - [x] Emit a frontend event/notification when a long-running command completes or fails.
+- [x] **Task: Conductor - User Manual Verification 'Phase 3: Intelligence Layer' (Protocol in workflow.md)** 44bed55
 
 ## Phase 4: Testing & Polish (Tier 4)
-- [ ] **Task: Add Behavioral Tests for TerminalPanel**
+- [~] **Task: Add Behavioral Tests for TerminalPanel**
     - [ ] Write tests in `TerminalPanel.test.tsx` for tab creation, splitting, and keyboard shortcuts.
 - [ ] **Task: Implement Fish Shell Support**
     - [ ] Add Fish-specific shell hooks in `shell_hooks.rs`.
