@@ -29,6 +29,8 @@ enum State {
     OscBody,
 }
 
+const MAX_OSC_BUFFER_SIZE: usize = 64 * 1024; // 64KB limit to prevent memory exhaustion
+
 /// Streaming OSC 633 parser with partial buffer for cross-chunk sequences.
 pub struct OscParser {
     state: State,
@@ -80,14 +82,25 @@ impl OscParser {
                         // Could be ST terminator (ESC \)
                         // Check if next byte is backslash — for now, store ESC in buffer
                         // and handle in a special way
-                        self.osc_buf.push(byte);
+                        if self.osc_buf.len() >= MAX_OSC_BUFFER_SIZE {
+                            self.osc_buf.clear();
+                            self.state = State::Normal;
+                        } else {
+                            self.osc_buf.push(byte);
+                        }
                     } else if byte == b'\\' && self.osc_buf.last() == Some(&0x1b) {
                         // ST terminator (ESC \) — remove the ESC from buffer
                         self.osc_buf.pop();
                         self.handle_osc(&mut output, &mut events);
                         self.state = State::Normal;
                     } else {
-                        self.osc_buf.push(byte);
+                        if self.osc_buf.len() >= MAX_OSC_BUFFER_SIZE {
+                            // Buffer limit exceeded — discard and reset
+                            self.osc_buf.clear();
+                            self.state = State::Normal;
+                        } else {
+                            self.osc_buf.push(byte);
+                        }
                     }
                 }
             }
@@ -318,5 +331,21 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn test_buffer_limit() {
+        let mut parser = OscParser::new();
+        // Start OSC
+        let _ = parser.parse(b"\x1b]");
+        
+        // Feed 65536 bytes (limit) + 1 byte to trigger the limit
+        let large_payload = vec![b'A'; 65536 + 1];
+        let _result = parser.parse(&large_payload);
+        
+        // The parser should reset state to Normal when limit is exceeded
+        // and we fed 65537 bytes. The 65537th byte should trigger the reset.
+        assert_eq!(parser.state, State::Normal);
+        assert!(parser.osc_buf.is_empty());
     }
 }
