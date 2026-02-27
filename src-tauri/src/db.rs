@@ -476,6 +476,7 @@ mod tests {
             Some("/home/user"),
             Some(0),
             Some(150),
+            Some("total 0"),
         )
         .unwrap();
         assert!(!id.is_empty());

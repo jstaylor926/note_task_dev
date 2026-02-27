@@ -102,6 +102,38 @@ printf '\e]633;P;Cwd=%s\a' "$PWD"
     .to_string()
 }
 
+/// Generate fish hook script that emits OSC 633 sequences for command capture.
+pub fn generate_fish_hooks() -> String {
+    r#"# Cortex shell integration for fish
+
+# Source user's real config.fish
+if test -f ~/.config/fish/config.fish
+    source ~/.config/fish/config.fish
+end
+
+# OSC 633 shell integration
+function __cortex_preexec --on-event fish_preexec
+    # E: command text
+    printf '\e]633;E;%s\a' "$argv[1]"
+    # C: command start
+    printf '\e]633;C\a'
+end
+
+function __cortex_postexec --on-event fish_postexec
+    # We get the exit code from the last command automatically in fish_postexec via $status
+    set -l exit_code $status
+    # D: command done with exit code
+    printf '\e]633;D;%s\a' "$exit_code"
+    # P: property — current working directory
+    printf '\e]633;P;Cwd=%s\a' "$PWD"
+end
+
+# Emit initial CWD
+printf '\e]633;P;Cwd=%s\a' "$PWD"
+"#
+    .to_string()
+}
+
 /// Write shell hook scripts to the app data directory.
 /// Returns the path to the hook directory.
 pub fn setup_hook_dir(app_data_dir: &Path) -> Result<PathBuf, String> {
@@ -118,6 +150,14 @@ pub fn setup_hook_dir(app_data_dir: &Path) -> Result<PathBuf, String> {
     let bashrc_path = hook_dir.join(".bashrc");
     std::fs::write(&bashrc_path, generate_bash_hooks())
         .map_err(|e| format!("Failed to write bash hooks: {}", e))?;
+
+    // Write fish hooks
+    let fish_dir = hook_dir.join("fish");
+    std::fs::create_dir_all(&fish_dir)
+        .map_err(|e| format!("Failed to create fish hooks directory: {}", e))?;
+    let fish_path = fish_dir.join("config.fish");
+    std::fs::write(&fish_path, generate_fish_hooks())
+        .map_err(|e| format!("Failed to write fish hooks: {}", e))?;
 
     Ok(hook_dir)
 }
@@ -139,6 +179,13 @@ pub fn build_shell_command(shell_path: &str, hook_dir: &Path) -> CommandBuilder 
         ShellType::Bash => {
             let rcfile = hook_dir.join(".bashrc");
             cmd.args(["--rcfile", &rcfile.to_string_lossy()]);
+        }
+        ShellType::Fish => {
+            let config_dir = hook_dir.join("fish");
+            if let Ok(existing) = std::env::var("XDG_CONFIG_HOME") {
+                cmd.env("CORTEX_USER_XDG_CONFIG_HOME", existing);
+            }
+            cmd.env("XDG_CONFIG_HOME", config_dir);
         }
         _ => {
             // Fish and unknown shells — run without hooks for now
