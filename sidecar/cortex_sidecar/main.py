@@ -57,9 +57,23 @@ def get_data_dir() -> Path:
         return Path(os.environ.get("APPDATA", Path.home())) / "com.cortex.app"
 
 
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+from datetime import datetime
+import uuid
+
+class EmbedRequest(BaseModel):
+    text: str
+    metadata: Optional[Dict[str, Any]] = None
+
+class SearchRequest(BaseModel):
+    query: str
+    limit: int = 5
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize LanceDB on startup, cleanup on shutdown."""
+    """Initialize LanceDB and Embedding model on startup."""
     data_dir = get_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -77,14 +91,78 @@ async def lifespan(app: FastAPI):
     app.state.lancedb_schema = schema
     app.state.data_dir = data_dir
 
+    # Load embedding model
+    # During tests, we might want to skip this or use a mock
+    if os.environ.get("CORTEX_TEST_MODE") == "1":
+        logger.info("Test mode: Using mock embedding model")
+        app.state.model = None
+    else:
+        from sentence_transformers import SentenceTransformer
+        logger.info("Loading sentence-transformer model...")
+        app.state.model = SentenceTransformer("all-MiniLM-L6-v2")
+
     logger.info("Sidecar ready")
     yield
 
     logger.info("Sidecar shutting down")
 
-
 app = FastAPI(title="Cortex Sidecar", version="0.1.0", lifespan=lifespan)
 app.include_router(health_router)
+
+@app.post("/embed")
+async def embed_text(req: EmbedRequest):
+    try:
+        if app.state.model:
+            vector = app.state.model.encode(req.text).tolist()
+        else:
+            # Mock vector for tests
+            vector = [0.1] * 384
+        
+        table = app.state.lancedb.open_table("embeddings")
+        
+        metadata = req.metadata or {}
+        
+        record = {
+            "vector": vector,
+            "text": req.text,
+            "source_type": metadata.get("source_type", "unknown"),
+            "source_file": metadata.get("source_file", "unknown"),
+            "entity_id": metadata.get("entity_id", str(uuid.uuid4())),
+            "chunk_type": metadata.get("chunk_type", "text"),
+            "chunk_index": metadata.get("chunk_index", 0),
+            "language": metadata.get("language", "text"),
+            "git_branch": metadata.get("git_branch", "main"),
+            "token_count": len(req.text.split()), # Rough estimate
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),
+        }
+        
+        table.add([record])
+        return {"status": "success", "entity_id": record["entity_id"]}
+    except Exception as e:
+        logger.error("Embedding failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/search")
+async def search_embeddings(query: str, limit: int = 5):
+    try:
+        if app.state.model:
+            vector = app.state.model.encode(query).tolist()
+        else:
+            vector = [0.1] * 384
+            
+        table = app.state.lancedb.open_table("embeddings")
+        results = table.search(vector).limit(limit).to_list()
+        
+        # Clean up results (remove vectors for response)
+        for r in results:
+            if "vector" in r:
+                del r["vector"]
+                
+        return {"results": results}
+    except Exception as e:
+        logger.error("Search failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def main():
