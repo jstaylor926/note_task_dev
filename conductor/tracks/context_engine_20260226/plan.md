@@ -4,10 +4,10 @@ This plan outlines the steps to implement the core file ingestion and semantic s
 
 ## Phase 1: Sidecar Foundation & Vector DB
 
-- [ ] **Task: Sidecar - Implement LanceDB initialization and schema management**
-    - [ ] Write tests for LanceDB connection and table creation in `sidecar/tests/`
-    - [ ] Implement LanceDB setup and schema definition in `sidecar/cortex_sidecar/main.py`
-    - [ ] Verify table persistence across sidecar restarts
+- [x] **Task: Sidecar - Implement LanceDB initialization and schema management** 76dc887
+    - [x] Write tests for LanceDB connection and table creation in `sidecar/tests/`
+    - [x] Implement LanceDB setup and schema definition in `sidecar/cortex_sidecar/main.py`
+    - [x] Verify table persistence across sidecar restarts
 
 - [ ] **Task: Sidecar - Create embedding and search API endpoints**
     - [ ] Write tests for `/embed` and `/search` endpoints
