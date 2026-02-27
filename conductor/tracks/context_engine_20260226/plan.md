@@ -17,7 +17,7 @@ This plan outlines the steps to implement the core file ingestion and semantic s
 
 - [x] **Task: Conductor - User Manual Verification 'Phase 1: Sidecar Foundation' (Protocol in workflow.md)** 5fa715c
 
-## Phase 2: Rust File Watcher & Ingestion
+## Phase 2: Rust File Watcher & Ingestion [checkpoint: 4b9ee65]
 
 - [x] **Task: Rust - Implement file watcher using the `notify` crate** b3d0c74
     - [x] Write tests for file event detection (Add, Modify, Delete)
@@ -30,7 +30,7 @@ This plan outlines the steps to implement the core file ingestion and semantic s
     - [x] Implement the trigger logic to send new/modified chunks to the Python sidecar
     - [x] Verify that file events correctly trigger sidecar requests
 
-- [~] **Task: Conductor - User Manual Verification 'Phase 2: Rust File Watcher' (Protocol in workflow.md)**
+- [x] **Task: Conductor - User Manual Verification 'Phase 2: Rust File Watcher' (Protocol in workflow.md)** 4b9ee65
 
 ## Phase 3: Integration & UI
 
