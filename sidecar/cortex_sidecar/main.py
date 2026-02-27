@@ -218,22 +218,52 @@ async def delete_embeddings(source_file: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/search")
-async def search_embeddings(query: str, limit: int = 5):
+async def search_embeddings(
+    query: str,
+    limit: int = 10,
+    language: Optional[str] = None,
+    source_type: Optional[str] = None,
+    chunk_type: Optional[str] = None,
+    file_path_prefix: Optional[str] = None,
+):
     try:
         if app.state.model:
             vector = app.state.model.encode(query).tolist()
         else:
             vector = [0.1] * 384
-            
+
         table = app.state.lancedb.open_table("embeddings")
-        results = table.search(vector).limit(limit).to_list()
-        
-        # Clean up results (remove vectors for response)
+
+        # Build filter conditions
+        conditions = []
+        if language:
+            conditions.append(f"language = '{language}'")
+        if source_type:
+            conditions.append(f"source_type = '{source_type}'")
+        if chunk_type:
+            conditions.append(f"chunk_type = '{chunk_type}'")
+        if file_path_prefix:
+            conditions.append(f"source_file LIKE '{file_path_prefix}%'")
+
+        search = table.search(vector).limit(limit)
+        if conditions:
+            where_clause = " AND ".join(conditions)
+            search = search.where(where_clause)
+
+        results = search.to_list()
+
+        # Clean up results and add relevance score
         for r in results:
-            if "vector" in r:
-                del r["vector"]
-                
-        return {"results": results}
+            # LanceDB returns _distance (lower = more similar)
+            distance = r.pop("_distance", None)
+            r.pop("vector", None)
+            # Convert distance to a 0-1 relevance score (1 = most relevant)
+            if distance is not None:
+                r["relevance_score"] = round(max(0.0, 1.0 - distance), 4)
+            else:
+                r["relevance_score"] = 0.0
+
+        return {"results": results, "query": query}
     except Exception as e:
         logger.error("Search failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))

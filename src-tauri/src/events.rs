@@ -3,6 +3,7 @@ use serde::Serialize;
 pub const INDEXING_PROGRESS: &str = "indexing:progress";
 pub const INDEXING_FILE_COMPLETE: &str = "indexing:file-complete";
 pub const INDEXING_FILE_ERROR: &str = "indexing:file-error";
+pub const INDEXING_FILE_DELETED: &str = "indexing:file-deleted";
 
 #[derive(Clone, Serialize)]
 pub struct IndexingProgressPayload {
@@ -26,6 +27,11 @@ pub struct IndexingFileErrorPayload {
     pub error: String,
     pub completed: usize,
     pub total: usize,
+}
+
+#[derive(Clone, Serialize)]
+pub struct IndexingFileDeletedPayload {
+    pub file_path: String,
 }
 
 #[cfg(test)]

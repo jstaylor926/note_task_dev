@@ -19,12 +19,24 @@ export interface SearchResult {
   text: string;
   source_file: string;
   chunk_index: number;
+  chunk_type: string;
+  entity_name: string | null;
+  language: string;
+  source_type: string;
+  relevance_score: number;
   created_at: string;
 }
 
 export interface SearchResponse {
   results: SearchResult[];
   query: string;
+}
+
+export interface SearchFilters {
+  language?: string;
+  source_type?: string;
+  chunk_type?: string;
+  file_path_prefix?: string;
 }
 
 export async function checkHealth(): Promise<HealthStatus> {
@@ -38,8 +50,13 @@ export async function getAppStatus(): Promise<string> {
 export async function semanticSearch(
   query: string,
   limit = 10,
+  filters?: SearchFilters,
 ): Promise<SearchResponse> {
-  return invoke<SearchResponse>('semantic_search', { query, limit });
+  return invoke<SearchResponse>('semantic_search', {
+    query,
+    limit,
+    ...filters,
+  });
 }
 
 export async function getIndexingStatus(): Promise<IndexingProgress> {

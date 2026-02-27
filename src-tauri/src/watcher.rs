@@ -1,6 +1,8 @@
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use crate::db;
 use crate::events;
@@ -14,28 +16,31 @@ const INDEXABLE_EXTENSIONS: &[&str] = &[
     "yaml", "yml", "html", "css", "sql", "sh", "bash", "zsh",
 ];
 
-const IGNORED_DIRS: &[&str] = &[
-    "node_modules", "target", ".git", "dist", "__pycache__", ".venv",
-    "venv", ".claude", ".DS_Store",
-];
+/// Debounce window for grouping rapid file events.
+const DEBOUNCE_MS: u64 = 300;
 
-fn should_index(path: &Path) -> bool {
-    // Skip directories in the ignore list
-    for component in path.components() {
-        if let std::path::Component::Normal(name) = component {
-            if let Some(name_str) = name.to_str() {
-                if IGNORED_DIRS.contains(&name_str) {
-                    return false;
-                }
-            }
-        }
-    }
-
-    // Only index files with known text extensions
+fn has_indexable_extension(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| INDEXABLE_EXTENSIONS.contains(&ext))
         .unwrap_or(false)
+}
+
+/// Check if a path should be indexed using .gitignore rules.
+/// For runtime event filtering (single file check).
+fn should_index_with_gitignore(path: &Path, gitignore: &Option<ignore::gitignore::Gitignore>) -> bool {
+    if !has_indexable_extension(path) {
+        return false;
+    }
+
+    if let Some(gi) = gitignore {
+        let is_dir = path.is_dir();
+        if gi.matched(path, is_dir).is_ignore() {
+            return false;
+        }
+    }
+
+    true
 }
 
 pub fn create_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
@@ -46,26 +51,46 @@ pub fn create_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::
     Ok((watcher, rx))
 }
 
-fn collect_files(dir: &Path) -> Vec<PathBuf> {
+/// Collect indexable files using ignore::WalkBuilder which respects .gitignore and .contextignore.
+fn collect_files_with_ignore(dir: &Path) -> Vec<PathBuf> {
+    let mut builder = ignore::WalkBuilder::new(dir);
+    builder
+        .hidden(true)           // Skip hidden files/dirs
+        .git_ignore(true)       // Respect .gitignore
+        .git_global(true)       // Respect global .gitignore
+        .git_exclude(true);     // Respect .git/info/exclude
+
+    // Add .contextignore if it exists
+    let contextignore = dir.join(".contextignore");
+    if contextignore.exists() {
+        builder.add_ignore(&contextignore);
+    }
+
     let mut files = Vec::new();
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return files,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = entry.file_name();
-            if let Some(name_str) = name.to_str() {
-                if !IGNORED_DIRS.contains(&name_str) {
-                    files.extend(collect_files(&path));
-                }
-            }
-        } else if should_index(&path) {
+    for entry in builder.build().flatten() {
+        let path = entry.path().to_path_buf();
+        if path.is_file() && has_indexable_extension(&path) {
             files.push(path);
         }
     }
     files
+}
+
+/// Build a gitignore matcher for runtime event filtering.
+fn build_gitignore(dir: &Path) -> Option<ignore::gitignore::Gitignore> {
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(dir);
+
+    let gitignore_path = dir.join(".gitignore");
+    if gitignore_path.exists() {
+        let _ = builder.add(&gitignore_path);
+    }
+
+    let contextignore_path = dir.join(".contextignore");
+    if contextignore_path.exists() {
+        let _ = builder.add(&contextignore_path);
+    }
+
+    builder.build().ok()
 }
 
 fn process_file_with_events(app_handle: AppHandle, path: PathBuf) {
@@ -209,6 +234,40 @@ fn process_file_with_events(app_handle: AppHandle, path: PathBuf) {
     });
 }
 
+/// Handle file deletion: remove embeddings, file_index, and entities.
+fn handle_file_deleted(app_handle: AppHandle, path: PathBuf) {
+    tauri::async_runtime::spawn(async move {
+        let state = app_handle.state::<AppState>();
+        let sidecar_url = state.sidecar_url.clone();
+        let file_path_str = path.to_string_lossy().to_string();
+
+        log::info!("File deleted: {:?}", path);
+
+        // Delete embeddings from sidecar
+        let _ = ingest::delete_file_embeddings(&file_path_str, &sidecar_url).await;
+
+        // Delete from SQLite (file_index + entities)
+        {
+            let conn = state.db.lock().unwrap();
+            if let Ok(Some(profile_id)) = db::get_active_profile_id(&conn) {
+                let _ = db::delete_file_index(&conn, &file_path_str, &profile_id);
+            }
+            let _ = db::delete_entities_by_source_file(&conn, &file_path_str);
+        }
+
+        let _ = app_handle.emit(events::INDEXING_FILE_DELETED, events::IndexingFileDeletedPayload {
+            file_path: file_path_str,
+        });
+    });
+}
+
+/// Tracks pending debounced events per file path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DebouncedAction {
+    Upsert,
+    Delete,
+}
+
 pub async fn start_watcher(app_handle: AppHandle, watch_path: PathBuf) {
     let (mut watcher, rx) = match create_watcher() {
         Ok(w) => w,
@@ -225,8 +284,11 @@ pub async fn start_watcher(app_handle: AppHandle, watch_path: PathBuf) {
 
     log::info!("Started watching {:?}", watch_path);
 
-    // Initial scan: index all existing files
-    let existing_files = collect_files(&watch_path);
+    // Build gitignore for runtime filtering
+    let gitignore = build_gitignore(&watch_path);
+
+    // Initial scan using ignore::WalkBuilder (respects .gitignore)
+    let existing_files = collect_files_with_ignore(&watch_path);
     log::info!("Initial scan: found {} indexable files", existing_files.len());
     for path in existing_files {
         process_file_with_events(app_handle.clone(), path);
@@ -235,19 +297,50 @@ pub async fn start_watcher(app_handle: AppHandle, watch_path: PathBuf) {
     // Keep watcher alive by moving it into the task
     let _watcher = watcher;
 
-    while let Ok(event) = rx.recv() {
-        match event {
-            Ok(event) => {
-                if event.kind.is_modify() || event.kind.is_create() {
-                    for path in event.paths {
-                        if !should_index(&path) {
-                            continue;
+    // Debounce map: path -> (action, last_event_time)
+    let mut pending: HashMap<PathBuf, (DebouncedAction, Instant)> = HashMap::new();
+    let debounce_duration = Duration::from_millis(DEBOUNCE_MS);
+
+    loop {
+        // Use a short timeout to periodically flush debounced events
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Ok(event)) => {
+                let now = Instant::now();
+                for path in event.paths {
+                    if event.kind.is_remove() {
+                        if has_indexable_extension(&path) {
+                            pending.insert(path, (DebouncedAction::Delete, now));
                         }
-                        process_file_with_events(app_handle.clone(), path);
+                    } else if event.kind.is_modify() || event.kind.is_create() {
+                        if should_index_with_gitignore(&path, &gitignore) {
+                            pending.insert(path, (DebouncedAction::Upsert, now));
+                        }
                     }
                 }
             }
-            Err(e) => log::error!("Watcher error: {}", e),
+            Ok(Err(e)) => log::error!("Watcher error: {}", e),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+
+        // Flush events that have settled (no new event within debounce window)
+        let now = Instant::now();
+        let ready: Vec<(PathBuf, DebouncedAction)> = pending
+            .iter()
+            .filter(|(_, (_, ts))| now.duration_since(*ts) >= debounce_duration)
+            .map(|(path, (action, _))| (path.clone(), *action))
+            .collect();
+
+        for (path, action) in ready {
+            pending.remove(&path);
+            match action {
+                DebouncedAction::Upsert => {
+                    process_file_with_events(app_handle.clone(), path);
+                }
+                DebouncedAction::Delete => {
+                    handle_file_deleted(app_handle.clone(), path);
+                }
+            }
         }
     }
 }
@@ -258,59 +351,99 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use tempfile::tempdir;
-    use std::time::Duration;
 
     #[test]
-    fn test_should_index_accepts_known_extensions() {
-        assert!(should_index(Path::new("/project/src/main.rs")));
-        assert!(should_index(Path::new("/project/src/lib.ts")));
-        assert!(should_index(Path::new("/project/README.md")));
-        assert!(should_index(Path::new("/project/config.toml")));
+    fn test_has_indexable_extension() {
+        assert!(has_indexable_extension(Path::new("/project/src/main.rs")));
+        assert!(has_indexable_extension(Path::new("/project/src/lib.ts")));
+        assert!(has_indexable_extension(Path::new("/project/README.md")));
+        assert!(has_indexable_extension(Path::new("/project/config.toml")));
+        assert!(!has_indexable_extension(Path::new("/project/image.png")));
+        assert!(!has_indexable_extension(Path::new("/project/binary.exe")));
     }
 
     #[test]
-    fn test_should_index_rejects_unknown_extensions() {
-        assert!(!should_index(Path::new("/project/image.png")));
-        assert!(!should_index(Path::new("/project/binary.exe")));
-        assert!(!should_index(Path::new("/project/data.bin")));
+    fn test_should_index_with_gitignore_no_ignore() {
+        // With no gitignore, only extension matters
+        assert!(should_index_with_gitignore(Path::new("/project/main.rs"), &None));
+        assert!(!should_index_with_gitignore(Path::new("/project/image.png"), &None));
     }
 
     #[test]
-    fn test_should_index_rejects_ignored_dirs() {
-        assert!(!should_index(Path::new("/project/node_modules/pkg/index.js")));
-        assert!(!should_index(Path::new("/project/target/debug/main.rs")));
-        assert!(!should_index(Path::new("/project/.git/config")));
-    }
-
-    #[test]
-    fn test_collect_files_respects_filters() {
+    fn test_should_index_with_gitignore_pattern() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path().canonicalize().unwrap();
+
+        // Create a .gitignore that ignores *.log files
+        let gitignore_path = dir_path.join(".gitignore");
+        std::fs::write(&gitignore_path, "*.log\nbuild/\n").unwrap();
+
+        let gi = build_gitignore(&dir_path);
+        assert!(gi.is_some());
+
+        // .rs should still be indexable
+        assert!(should_index_with_gitignore(&dir_path.join("main.rs"), &gi));
+        // .log should be ignored even though it's not in INDEXABLE_EXTENSIONS anyway
+        assert!(!should_index_with_gitignore(&dir_path.join("debug.log"), &gi));
+    }
+
+    #[test]
+    fn test_collect_files_with_ignore_respects_gitignore() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path().canonicalize().unwrap();
+
+        // Initialize a git repo so .gitignore is recognized
+        std::fs::create_dir(dir_path.join(".git")).unwrap();
+
+        // Create a .gitignore
+        std::fs::write(dir_path.join(".gitignore"), "ignored_dir/\n").unwrap();
 
         // Create indexable file
         let rs_file = dir_path.join("main.rs");
         std::fs::write(&rs_file, "fn main() {}").unwrap();
 
         // Create non-indexable file
-        let png_file = dir_path.join("image.png");
-        std::fs::write(&png_file, "fake png").unwrap();
+        std::fs::write(dir_path.join("image.png"), "fake png").unwrap();
 
         // Create ignored dir with indexable file inside
-        let nm_dir = dir_path.join("node_modules");
-        std::fs::create_dir(&nm_dir).unwrap();
-        std::fs::write(nm_dir.join("lib.js"), "module.exports = {}").unwrap();
+        let ignored_dir = dir_path.join("ignored_dir");
+        std::fs::create_dir(&ignored_dir).unwrap();
+        std::fs::write(ignored_dir.join("lib.rs"), "fn lib() {}").unwrap();
 
-        let files = collect_files(&dir_path);
+        let files = collect_files_with_ignore(&dir_path);
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0], rs_file);
+        assert!(files.iter().any(|f| f.ends_with("main.rs")));
+    }
+
+    #[test]
+    fn test_contextignore_support() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path().canonicalize().unwrap();
+
+        // Create a .contextignore that ignores generated files
+        std::fs::write(dir_path.join(".contextignore"), "generated.rs\n").unwrap();
+
+        std::fs::write(dir_path.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir_path.join("generated.rs"), "fn gen() {}").unwrap();
+
+        let files = collect_files_with_ignore(&dir_path);
+        assert_eq!(files.len(), 1);
+        assert!(files.iter().any(|f| f.ends_with("main.rs")));
+    }
+
+    #[test]
+    fn test_debounce_action_enum() {
+        // Simple test that DebouncedAction variants work correctly
+        assert_eq!(DebouncedAction::Upsert, DebouncedAction::Upsert);
+        assert_eq!(DebouncedAction::Delete, DebouncedAction::Delete);
+        assert_ne!(DebouncedAction::Upsert, DebouncedAction::Delete);
     }
 
     #[test]
     fn test_file_watcher_detects_creation() {
         let dir = tempdir().unwrap();
-        // Canonicalize the directory path to avoid macOS /var vs /private/var issues
         let dir_path = dir.path().canonicalize().unwrap();
-        
+
         let (mut watcher, rx) = create_watcher().unwrap();
 
         watcher.watch(&dir_path, RecursiveMode::Recursive).unwrap();
@@ -323,12 +456,9 @@ mod tests {
 
         // Wait for event
         let timeout = Duration::from_secs(2);
-        
-        // On some platforms, multiple events might be fired (Create, Modify, etc.)
-        // We look for one that contains our path
         let mut found = false;
         let start = std::time::Instant::now();
-        
+
         while start.elapsed() < timeout {
             if let Ok(Ok(event)) = rx.recv_timeout(Duration::from_millis(500)) {
                 if event.paths.iter().any(|p| p.canonicalize().unwrap_or_default() == file_path) {

@@ -61,6 +61,11 @@ pub struct SearchResult {
     pub text: String,
     pub source_file: String,
     pub chunk_index: i32,
+    pub chunk_type: String,
+    pub entity_name: Option<String>,
+    pub language: String,
+    pub source_type: String,
+    pub relevance_score: f64,
     pub created_at: String,
 }
 
@@ -74,15 +79,36 @@ pub struct SearchResponse {
 pub async fn semantic_search(
     query: String,
     limit: Option<usize>,
+    language: Option<String>,
+    source_type: Option<String>,
+    chunk_type: Option<String>,
+    file_path_prefix: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<SearchResponse, String> {
     let client = reqwest::Client::new();
     let limit = limit.unwrap_or(10);
     let url = format!("{}/search", state.sidecar_url);
 
+    let mut params: Vec<(&str, String)> = vec![
+        ("query", query.clone()),
+        ("limit", limit.to_string()),
+    ];
+    if let Some(ref lang) = language {
+        params.push(("language", lang.clone()));
+    }
+    if let Some(ref st) = source_type {
+        params.push(("source_type", st.clone()));
+    }
+    if let Some(ref ct) = chunk_type {
+        params.push(("chunk_type", ct.clone()));
+    }
+    if let Some(ref fpp) = file_path_prefix {
+        params.push(("file_path_prefix", fpp.clone()));
+    }
+
     let resp = client
         .get(&url)
-        .query(&[("query", &query), ("limit", &limit.to_string())])
+        .query(&params)
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
@@ -103,6 +129,11 @@ pub async fn semantic_search(
             text: r.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             source_file: r.get("source_file").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
             chunk_index: r.get("chunk_index").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+            chunk_type: r.get("chunk_type").and_then(|v| v.as_str()).unwrap_or("text").to_string(),
+            entity_name: r.get("entity_name").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            language: r.get("language").and_then(|v| v.as_str()).unwrap_or("text").to_string(),
+            source_type: r.get("source_type").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+            relevance_score: r.get("relevance_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
             created_at: r.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         })
         .collect();
