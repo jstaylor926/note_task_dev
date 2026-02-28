@@ -11,6 +11,7 @@ mod pty;
 mod pty_commands;
 mod osc_parser;
 mod shell_hooks;
+mod file_commands;
 
 use std::sync::Mutex;
 use tauri::{Manager, Listener};
@@ -213,6 +214,10 @@ fn main() {
             pty_commands::pty_write,
             pty_commands::pty_resize,
             pty_commands::pty_kill,
+            file_commands::file_read,
+            file_commands::file_write,
+            file_commands::file_list_directory,
+            file_commands::file_stat,
         ])
         .build(tauri::generate_context!())
         .expect("error building cortex")
