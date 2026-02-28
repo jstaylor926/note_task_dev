@@ -88,6 +88,10 @@ class SearchRequest(BaseModel):
     query: str
     limit: int = 5
 
+class ExtractReferencesRequest(BaseModel):
+    text: str
+    known_symbols: List[str] = []
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize LanceDB and Embedding model on startup.
@@ -339,6 +343,23 @@ async def search_embeddings(
     except Exception as e:
         logger.error("Search failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/extract-references")
+async def extract_references_endpoint(req: ExtractReferencesRequest):
+    """Extract references (URLs, file paths, code symbols, action items) from text.
+
+    Args:
+        req: The ExtractReferencesRequest containing text and optional known symbols.
+
+    Returns:
+        A dictionary with a list of extracted references.
+    """
+    from dataclasses import asdict
+    from cortex_sidecar.reference_extraction import extract_references
+
+    refs = extract_references(req.text, req.known_symbols)
+    return {"references": [asdict(r) for r in refs]}
 
 
 def main():

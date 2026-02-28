@@ -192,4 +192,59 @@ describe('SearchPanel', () => {
       expect(container.textContent?.toLowerCase()).toContain('error');
     });
   });
+
+  it('renders scope toggle buttons', async () => {
+    const { default: SearchPanel } = await import('../SearchPanel');
+    const { container } = render(() => <SearchPanel />);
+    const codeBtn = container.querySelector('[data-scope="code"]');
+    const entitiesBtn = container.querySelector('[data-scope="entities"]');
+    expect(codeBtn).toBeTruthy();
+    expect(codeBtn!.textContent).toBe('Code');
+    expect(entitiesBtn).toBeTruthy();
+    expect(entitiesBtn!.textContent).toBe('Notes & Tasks');
+  });
+
+  it('switches to entity search when Notes & Tasks scope is selected', async () => {
+    const entityResults = [
+      { id: 'n1', entity_type: 'note', title: 'My Note', content: 'note body', source_file: null, updated_at: '' },
+    ];
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValue(entityResults);
+
+    const { default: SearchPanel } = await import('../SearchPanel');
+    const { container } = render(() => <SearchPanel />);
+
+    // Switch to entities scope
+    const entitiesBtn = container.querySelector('[data-scope="entities"]') as HTMLButtonElement;
+    fireEvent.click(entitiesBtn);
+
+    const input = container.querySelector('input') as HTMLInputElement;
+    const form = container.querySelector('form') as HTMLFormElement;
+    fireEvent.input(input, { target: { value: 'My Note' } });
+    fireEvent.submit(form);
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('entity_search', {
+        query: 'My Note',
+        entityType: null,
+        limit: 20,
+      });
+      expect(container.textContent).toContain('My Note');
+      expect(container.textContent).toContain('note');
+    });
+  });
+
+  it('hides language filter when in entities scope', async () => {
+    const { default: SearchPanel } = await import('../SearchPanel');
+    const { container } = render(() => <SearchPanel />);
+
+    // Initially in code scope, select should be visible
+    expect(container.querySelector('select')).toBeTruthy();
+
+    // Switch to entities scope
+    const entitiesBtn = container.querySelector('[data-scope="entities"]') as HTMLButtonElement;
+    fireEvent.click(entitiesBtn);
+
+    // Select should be hidden
+    expect(container.querySelector('select')).toBeFalsy();
+  });
 });

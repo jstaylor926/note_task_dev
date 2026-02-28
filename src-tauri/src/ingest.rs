@@ -165,6 +165,90 @@ pub async fn delete_file_embeddings(file_path: &str, sidecar_url: &str) -> anyho
     Ok(())
 }
 
+// ─── Reference Extraction (for auto-linking) ────────────────────────
+
+#[derive(Serialize)]
+struct ExtractReferencesRequest {
+    text: String,
+    known_symbols: Vec<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ExtractedReference {
+    pub text: String,
+    pub ref_type: String,
+    pub start: usize,
+    pub end: usize,
+    pub confidence: f64,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ExtractReferencesResponse {
+    pub references: Vec<ExtractedReference>,
+}
+
+/// Call sidecar /extract-references endpoint.
+pub async fn extract_references(
+    text: &str,
+    known_symbols: &[String],
+    sidecar_url: &str,
+) -> anyhow::Result<ExtractReferencesResponse> {
+    let req = ExtractReferencesRequest {
+        text: text.to_string(),
+        known_symbols: known_symbols.to_vec(),
+    };
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/extract-references", sidecar_url);
+
+    let res = client.post(url).json(&req).send().await?;
+
+    if !res.status().is_success() {
+        let err = res.text().await?;
+        anyhow::bail!("Sidecar extract-references error: {}", err);
+    }
+
+    let result = res.json::<ExtractReferencesResponse>().await?;
+    Ok(result)
+}
+
+/// Embed a note's content into LanceDB via sidecar /embed endpoint.
+pub async fn embed_note(
+    note_id: &str,
+    title: &str,
+    content: &str,
+    sidecar_url: &str,
+) -> anyhow::Result<()> {
+    let text = format!("Note: {}\n\n{}", title, content);
+
+    #[derive(Serialize)]
+    struct EmbedReq<'a> {
+        text: String,
+        metadata: std::collections::HashMap<&'a str, &'a str>,
+    }
+
+    let source_file_key = format!("note_{}", note_id);
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("source_type", "note");
+    metadata.insert("source_file", source_file_key.as_str());
+    metadata.insert("entity_id", note_id);
+    metadata.insert("chunk_type", "note");
+
+    let req = EmbedReq { text, metadata };
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/embed", sidecar_url);
+
+    let res = client.post(url).json(&req).send().await?;
+
+    if !res.status().is_success() {
+        let err = res.text().await?;
+        anyhow::bail!("Sidecar embed note error: {}", err);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

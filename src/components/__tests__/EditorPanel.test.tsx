@@ -21,9 +21,15 @@ vi.mock('../CodeMirrorEditor', () => ({
   ),
 }));
 
+const mockGetLinksForFile = vi.fn();
+vi.mock('../../lib/editorLinks', () => ({
+  getLinksForFile: (...args: unknown[]) => mockGetLinksForFile(...args),
+}));
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.resetModules();
+  mockGetLinksForFile.mockResolvedValue([]);
 });
 
 describe('EditorPanel', () => {
@@ -140,5 +146,51 @@ describe('EditorPanel', () => {
 
     expect(editorStore.state.tabs.length).toBe(1);
     expect(editorStore.getActiveFile()!.path).toBe('/project/a.txt');
+  });
+
+  it('shows related links badge when file has links', async () => {
+    const mockLinks = [
+      {
+        link_id: 'l1',
+        linked_entity_id: 'n1',
+        linked_entity_title: 'Architecture Notes',
+        linked_entity_type: 'note',
+        linked_source_file: null,
+        relationship_type: 'references',
+        confidence: 0.95,
+        auto_generated: true,
+        direction: 'incoming',
+      },
+      {
+        link_id: 'l2',
+        linked_entity_id: 'n2',
+        linked_entity_title: 'Design Doc',
+        linked_entity_type: 'note',
+        linked_source_file: null,
+        relationship_type: 'references',
+        confidence: 0.88,
+        auto_generated: true,
+        direction: 'incoming',
+      },
+    ];
+    mockGetLinksForFile.mockResolvedValue(mockLinks);
+
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValue({
+      content: 'fn main() {}',
+      size: 12,
+      extension: 'rs',
+      path: '/project/src/main.rs',
+    });
+
+    const { default: EditorPanel, handleOpenFile } = await import('../EditorPanel');
+    render(() => <EditorPanel />);
+
+    await handleOpenFile('/project/src/main.rs');
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('related-links-badge')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('related-links-badge').textContent).toContain('2 links');
   });
 });

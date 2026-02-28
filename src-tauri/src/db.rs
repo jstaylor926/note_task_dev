@@ -1,6 +1,53 @@
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, Result, params};
+use serde::{Serialize, Deserialize};
 use std::path::Path;
 use uuid::Uuid;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NoteRow {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub metadata: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TaskRow {
+    pub id: String,
+    pub title: String,
+    pub content: Option<String>,
+    pub status: String,
+    pub priority: String,
+    pub due_date: Option<String>,
+    pub assigned_to: Option<String>,
+    pub completed_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EntityLinkRow {
+    pub id: String,
+    pub source_entity_id: String,
+    pub target_entity_id: String,
+    pub relationship_type: String,
+    pub confidence: f64,
+    pub auto_generated: bool,
+    pub context: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EntitySearchResult {
+    pub id: String,
+    pub entity_type: String,
+    pub title: String,
+    pub content: Option<String>,
+    pub source_file: Option<String>,
+    pub updated_at: String,
+}
 
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -358,6 +405,451 @@ pub fn delete_file_index(conn: &Connection, file_path: &str, profile_id: &str) -
     Ok(())
 }
 
+// ─── Note CRUD ───────────────────────────────────────────────────────
+
+/// Create a new note entity. Returns the created NoteRow.
+pub fn create_note(conn: &Connection, title: &str, content: &str, profile_id: &str) -> Result<NoteRow> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO entities (id, entity_type, title, content, workspace_profile_id)
+         VALUES (?1, 'note', ?2, ?3, ?4)",
+        params![id, title, content, profile_id],
+    )?;
+    // Read back the created row to get server-set timestamps
+    get_note(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+/// Get a single note by ID.
+pub fn get_note(conn: &Connection, id: &str) -> Result<Option<NoteRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, content, metadata, created_at, updated_at
+         FROM entities WHERE id = ?1 AND entity_type = 'note'"
+    )?;
+    let mut rows = stmt.query(params![id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(NoteRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            content: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            metadata: row.get(3)?,
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
+        })),
+        None => Ok(None),
+    }
+}
+
+/// List all notes for a workspace profile, ordered by updated_at DESC.
+pub fn list_notes(conn: &Connection, profile_id: &str) -> Result<Vec<NoteRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, content, metadata, created_at, updated_at
+         FROM entities WHERE entity_type = 'note' AND workspace_profile_id = ?1
+         ORDER BY updated_at DESC"
+    )?;
+    let rows = stmt.query_map(params![profile_id], |row| {
+        Ok(NoteRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            content: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            metadata: row.get(3)?,
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Update a note's title and content. Returns true if a row was updated.
+pub fn update_note(conn: &Connection, id: &str, title: &str, content: &str) -> Result<bool> {
+    let updated = conn.execute(
+        "UPDATE entities SET title = ?1, content = ?2, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?3 AND entity_type = 'note'",
+        params![title, content, id],
+    )?;
+    Ok(updated > 0)
+}
+
+/// Delete a note. Returns true if a row was deleted. Cascade deletes entity_links via FK.
+pub fn delete_note(conn: &Connection, id: &str) -> Result<bool> {
+    let deleted = conn.execute(
+        "DELETE FROM entities WHERE id = ?1 AND entity_type = 'note'",
+        params![id],
+    )?;
+    Ok(deleted > 0)
+}
+
+// ─── Task CRUD ───────────────────────────────────────────────────────
+
+/// Create a new task (inserts into both entities and tasks tables). Returns the created TaskRow.
+pub fn create_task(conn: &Connection, title: &str, content: Option<&str>, priority: &str, profile_id: &str) -> Result<TaskRow> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO entities (id, entity_type, title, content, workspace_profile_id)
+         VALUES (?1, 'task', ?2, ?3, ?4)",
+        params![id, title, content, profile_id],
+    )?;
+    conn.execute(
+        "INSERT INTO tasks (entity_id, status, priority, workspace_profile_id)
+         VALUES (?1, 'todo', ?2, ?3)",
+        params![id, priority, profile_id],
+    )?;
+    get_task(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+/// Get a single task by entity ID (joins entities + tasks).
+pub fn get_task(conn: &Connection, id: &str) -> Result<Option<TaskRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.id, e.title, e.content, t.status, t.priority, t.due_date,
+                t.assigned_to, t.completed_at, e.created_at, e.updated_at
+         FROM entities e JOIN tasks t ON e.id = t.entity_id
+         WHERE e.id = ?1 AND e.entity_type = 'task'"
+    )?;
+    let mut rows = stmt.query(params![id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(TaskRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            content: row.get(2)?,
+            status: row.get(3)?,
+            priority: row.get(4)?,
+            due_date: row.get(5)?,
+            assigned_to: row.get(6)?,
+            completed_at: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+        })),
+        None => Ok(None),
+    }
+}
+
+/// List tasks for a workspace profile with optional status filter.
+pub fn list_tasks(conn: &Connection, profile_id: &str, status_filter: Option<&str>) -> Result<Vec<TaskRow>> {
+    fn read_task_row(row: &rusqlite::Row) -> rusqlite::Result<TaskRow> {
+        Ok(TaskRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            content: row.get(2)?,
+            status: row.get(3)?,
+            priority: row.get(4)?,
+            due_date: row.get(5)?,
+            assigned_to: row.get(6)?,
+            completed_at: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+        })
+    }
+
+    if let Some(status) = status_filter {
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.title, e.content, t.status, t.priority, t.due_date,
+                    t.assigned_to, t.completed_at, e.created_at, e.updated_at
+             FROM entities e JOIN tasks t ON e.id = t.entity_id
+             WHERE e.entity_type = 'task' AND e.workspace_profile_id = ?1 AND t.status = ?2
+             ORDER BY CASE t.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, e.created_at DESC"
+        )?;
+        let result = stmt.query_map(params![profile_id, status], read_task_row)?.collect();
+        result
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.title, e.content, t.status, t.priority, t.due_date,
+                    t.assigned_to, t.completed_at, e.created_at, e.updated_at
+             FROM entities e JOIN tasks t ON e.id = t.entity_id
+             WHERE e.entity_type = 'task' AND e.workspace_profile_id = ?1
+             ORDER BY CASE t.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, e.created_at DESC"
+        )?;
+        let result = stmt.query_map(params![profile_id], read_task_row)?.collect();
+        result
+    }
+}
+
+/// Update a task's fields. Sets completed_at when status='done'. Returns true if updated.
+pub fn update_task(
+    conn: &Connection,
+    id: &str,
+    title: &str,
+    content: Option<&str>,
+    status: &str,
+    priority: &str,
+    due_date: Option<&str>,
+    assigned_to: Option<&str>,
+) -> Result<bool> {
+    let updated_entity = conn.execute(
+        "UPDATE entities SET title = ?1, content = ?2, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?3 AND entity_type = 'task'",
+        params![title, content, id],
+    )?;
+    if updated_entity == 0 {
+        return Ok(false);
+    }
+
+    // Use SQL expression for completed_at: set CURRENT_TIMESTAMP when transitioning to 'done',
+    // preserve existing value if already done, clear if moving away from done
+    if status == "done" {
+        conn.execute(
+            "UPDATE tasks SET status = ?1, priority = ?2, due_date = ?3, assigned_to = ?4,
+             completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+             WHERE entity_id = ?5",
+            params![status, priority, due_date, assigned_to, id],
+        )?;
+    } else {
+        conn.execute(
+            "UPDATE tasks SET status = ?1, priority = ?2, due_date = ?3, assigned_to = ?4,
+             completed_at = NULL
+             WHERE entity_id = ?5",
+            params![status, priority, due_date, assigned_to, id],
+        )?;
+    }
+    Ok(true)
+}
+
+/// Delete a task. CASCADE deletes the tasks row via FK.
+pub fn delete_task(conn: &Connection, id: &str) -> Result<bool> {
+    let deleted = conn.execute(
+        "DELETE FROM entities WHERE id = ?1 AND entity_type = 'task'",
+        params![id],
+    )?;
+    Ok(deleted > 0)
+}
+
+// ─── Entity Links ────────────────────────────────────────────────────
+
+/// Create an entity link. Uses ON CONFLICT to upsert.
+pub fn create_entity_link(
+    conn: &Connection,
+    source_id: &str,
+    target_id: &str,
+    relationship_type: &str,
+    auto_generated: bool,
+    context: Option<&str>,
+) -> Result<EntityLinkRow> {
+    create_entity_link_with_confidence(conn, source_id, target_id, relationship_type, 1.0, auto_generated, context)
+}
+
+/// Create an entity link with an explicit confidence score. Uses ON CONFLICT to upsert.
+pub fn create_entity_link_with_confidence(
+    conn: &Connection,
+    source_id: &str,
+    target_id: &str,
+    relationship_type: &str,
+    confidence: f64,
+    auto_generated: bool,
+    context: Option<&str>,
+) -> Result<EntityLinkRow> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO entity_links (id, source_entity_id, target_entity_id, relationship_type, confidence, auto_generated, context)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(source_entity_id, target_entity_id, relationship_type) DO UPDATE SET
+           context = excluded.context,
+           confidence = excluded.confidence,
+           auto_generated = excluded.auto_generated",
+        params![id, source_id, target_id, relationship_type, confidence, auto_generated, context],
+    )?;
+    // Read back the row (may be the upserted one with different id)
+    let mut stmt = conn.prepare(
+        "SELECT id, source_entity_id, target_entity_id, relationship_type, confidence, auto_generated, context, created_at
+         FROM entity_links WHERE source_entity_id = ?1 AND target_entity_id = ?2 AND relationship_type = ?3"
+    )?;
+    let mut rows = stmt.query(params![source_id, target_id, relationship_type])?;
+    let row = rows.next()?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+    Ok(EntityLinkRow {
+        id: row.get(0)?,
+        source_entity_id: row.get(1)?,
+        target_entity_id: row.get(2)?,
+        relationship_type: row.get(3)?,
+        confidence: row.get(4)?,
+        auto_generated: row.get(5)?,
+        context: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
+/// Delete an entity link by ID.
+pub fn delete_entity_link(conn: &Connection, link_id: &str) -> Result<bool> {
+    let deleted = conn.execute(
+        "DELETE FROM entity_links WHERE id = ?1",
+        params![link_id],
+    )?;
+    Ok(deleted > 0)
+}
+
+/// List all entity links where the given entity is either source or target.
+pub fn list_entity_links(conn: &Connection, entity_id: &str) -> Result<Vec<EntityLinkRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, source_entity_id, target_entity_id, relationship_type, confidence, auto_generated, context, created_at
+         FROM entity_links WHERE source_entity_id = ?1 OR target_entity_id = ?1
+         ORDER BY created_at DESC"
+    )?;
+    let rows = stmt.query_map(params![entity_id], |row| {
+        Ok(EntityLinkRow {
+            id: row.get(0)?,
+            source_entity_id: row.get(1)?,
+            target_entity_id: row.get(2)?,
+            relationship_type: row.get(3)?,
+            confidence: row.get(4)?,
+            auto_generated: row.get(5)?,
+            context: row.get(6)?,
+            created_at: row.get(7)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// A link enriched with the linked entity's details (avoids N+1 queries in frontend).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LinkWithEntity {
+    pub link_id: String,
+    pub linked_entity_id: String,
+    pub linked_entity_title: String,
+    pub linked_entity_type: String,
+    pub linked_source_file: Option<String>,
+    pub relationship_type: String,
+    pub confidence: f64,
+    pub auto_generated: bool,
+    pub direction: String,  // "outgoing" or "incoming"
+}
+
+/// Get all entity titles for a profile (used to feed known_symbols to sidecar).
+/// Returns Vec<(id, title, entity_type)>.
+pub fn list_entity_titles(conn: &Connection, profile_id: &str) -> Result<Vec<(String, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, entity_type FROM entities WHERE workspace_profile_id = ?1"
+    )?;
+    let rows = stmt.query_map(params![profile_id], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    rows.collect()
+}
+
+/// Find entities by exact title match. Returns Vec<(id, entity_type)>.
+pub fn find_entities_by_title(conn: &Connection, title: &str, profile_id: &str) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, entity_type FROM entities WHERE title = ?1 AND workspace_profile_id = ?2"
+    )?;
+    let rows = stmt.query_map(params![title, profile_id], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
+    rows.collect()
+}
+
+/// Find entities by source file path. Returns Vec<(id, title, entity_type)>.
+pub fn find_entities_by_source_file(conn: &Connection, source_file: &str) -> Result<Vec<(String, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, entity_type FROM entities WHERE source_file = ?1"
+    )?;
+    let rows = stmt.query_map(params![source_file], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    rows.collect()
+}
+
+/// List suggested links (auto_generated=true with confidence >= min_confidence).
+pub fn list_suggested_links(conn: &Connection, entity_id: &str, min_confidence: f64) -> Result<Vec<EntityLinkRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, source_entity_id, target_entity_id, relationship_type, confidence, auto_generated, context, created_at
+         FROM entity_links
+         WHERE (source_entity_id = ?1 OR target_entity_id = ?1)
+           AND auto_generated = 1 AND confidence >= ?2
+         ORDER BY confidence DESC"
+    )?;
+    let rows = stmt.query_map(params![entity_id, min_confidence], |row| {
+        Ok(EntityLinkRow {
+            id: row.get(0)?,
+            source_entity_id: row.get(1)?,
+            target_entity_id: row.get(2)?,
+            relationship_type: row.get(3)?,
+            confidence: row.get(4)?,
+            auto_generated: row.get(5)?,
+            context: row.get(6)?,
+            created_at: row.get(7)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Confirm a suggested link (set auto_generated = false). Returns true if updated.
+pub fn confirm_entity_link(conn: &Connection, link_id: &str) -> Result<bool> {
+    let updated = conn.execute(
+        "UPDATE entity_links SET auto_generated = 0 WHERE id = ?1",
+        params![link_id],
+    )?;
+    Ok(updated > 0)
+}
+
+/// List entity links with full details of the linked entity.
+pub fn list_entity_links_with_details(conn: &Connection, entity_id: &str) -> Result<Vec<LinkWithEntity>> {
+    let mut stmt = conn.prepare(
+        "SELECT el.id,
+           CASE WHEN el.source_entity_id = ?1 THEN el.target_entity_id ELSE el.source_entity_id END as linked_id,
+           e.title, e.entity_type, e.source_file,
+           el.relationship_type, el.confidence, el.auto_generated,
+           CASE WHEN el.source_entity_id = ?1 THEN 'outgoing' ELSE 'incoming' END as direction
+         FROM entity_links el
+         JOIN entities e ON e.id = CASE WHEN el.source_entity_id = ?1 THEN el.target_entity_id ELSE el.source_entity_id END
+         WHERE el.source_entity_id = ?1 OR el.target_entity_id = ?1
+         ORDER BY el.confidence DESC"
+    )?;
+    let rows = stmt.query_map(params![entity_id], |row| {
+        Ok(LinkWithEntity {
+            link_id: row.get(0)?,
+            linked_entity_id: row.get(1)?,
+            linked_entity_title: row.get(2)?,
+            linked_entity_type: row.get(3)?,
+            linked_source_file: row.get(4)?,
+            relationship_type: row.get(5)?,
+            confidence: row.get(6)?,
+            auto_generated: row.get(7)?,
+            direction: row.get(8)?,
+        })
+    })?;
+    rows.collect()
+}
+
+// ─── Entity Search ───────────────────────────────────────────────────
+
+/// Search entities by keyword (LIKE) with optional type filter.
+pub fn search_entities(
+    conn: &Connection,
+    query: &str,
+    entity_type: Option<&str>,
+    profile_id: &str,
+    limit: usize,
+) -> Result<Vec<EntitySearchResult>> {
+    fn read_search_row(row: &rusqlite::Row) -> rusqlite::Result<EntitySearchResult> {
+        Ok(EntitySearchResult {
+            id: row.get(0)?,
+            entity_type: row.get(1)?,
+            title: row.get(2)?,
+            content: row.get(3)?,
+            source_file: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    }
+
+    let like_pattern = format!("%{}%", query);
+    if let Some(etype) = entity_type {
+        let mut stmt = conn.prepare(
+            "SELECT id, entity_type, title, content, source_file, updated_at
+             FROM entities
+             WHERE workspace_profile_id = ?1 AND entity_type = ?2
+               AND (title LIKE ?3 OR content LIKE ?3)
+             ORDER BY updated_at DESC LIMIT ?4"
+        )?;
+        let result = stmt.query_map(params![profile_id, etype, like_pattern, limit as i64], read_search_row)?.collect();
+        result
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, entity_type, title, content, source_file, updated_at
+             FROM entities
+             WHERE workspace_profile_id = ?1
+               AND (title LIKE ?2 OR content LIKE ?2)
+             ORDER BY updated_at DESC LIMIT ?3"
+        )?;
+        let result = stmt.query_map(params![profile_id, like_pattern, limit as i64], read_search_row)?.collect();
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,5 +1003,418 @@ mod tests {
         let conn = initialize(Path::new(":memory:")).unwrap();
         let deleted = delete_entities_by_source_file(&conn, "nonexistent.rs").unwrap();
         assert_eq!(deleted, 0);
+    }
+
+    // ─── Note CRUD tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_create_note_returns_valid_row() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let note = create_note(&conn, "My Note", "Hello world", &pid).unwrap();
+        assert!(!note.id.is_empty());
+        assert_eq!(note.title, "My Note");
+        assert_eq!(note.content, "Hello world");
+    }
+
+    #[test]
+    fn test_get_note_by_id() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let note = create_note(&conn, "Test", "Content", &pid).unwrap();
+        let fetched = get_note(&conn, &note.id).unwrap().unwrap();
+        assert_eq!(fetched.id, note.id);
+        assert_eq!(fetched.title, "Test");
+    }
+
+    #[test]
+    fn test_get_note_nonexistent() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let result = get_note(&conn, "nonexistent").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_list_notes() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        create_note(&conn, "Note A", "a", &pid).unwrap();
+        create_note(&conn, "Note B", "b", &pid).unwrap();
+        let notes = list_notes(&conn, &pid).unwrap();
+        assert_eq!(notes.len(), 2);
+    }
+
+    #[test]
+    fn test_update_note() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let note = create_note(&conn, "Old Title", "old", &pid).unwrap();
+        let updated = update_note(&conn, &note.id, "New Title", "new content").unwrap();
+        assert!(updated);
+        let fetched = get_note(&conn, &note.id).unwrap().unwrap();
+        assert_eq!(fetched.title, "New Title");
+        assert_eq!(fetched.content, "new content");
+    }
+
+    #[test]
+    fn test_update_note_nonexistent() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let updated = update_note(&conn, "fake-id", "t", "c").unwrap();
+        assert!(!updated);
+    }
+
+    #[test]
+    fn test_delete_note() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let note = create_note(&conn, "To Delete", "bye", &pid).unwrap();
+        let deleted = delete_note(&conn, &note.id).unwrap();
+        assert!(deleted);
+        assert!(get_note(&conn, &note.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_delete_note_nonexistent() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let deleted = delete_note(&conn, "fake").unwrap();
+        assert!(!deleted);
+    }
+
+    // ─── Task CRUD tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_create_task_returns_valid_row() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let task = create_task(&conn, "My Task", Some("details"), "high", &pid).unwrap();
+        assert!(!task.id.is_empty());
+        assert_eq!(task.title, "My Task");
+        assert_eq!(task.status, "todo");
+        assert_eq!(task.priority, "high");
+        assert!(task.completed_at.is_none());
+    }
+
+    #[test]
+    fn test_get_task_by_id() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let task = create_task(&conn, "Fetch Me", None, "medium", &pid).unwrap();
+        let fetched = get_task(&conn, &task.id).unwrap().unwrap();
+        assert_eq!(fetched.id, task.id);
+        assert_eq!(fetched.title, "Fetch Me");
+    }
+
+    #[test]
+    fn test_get_task_nonexistent() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        assert!(get_task(&conn, "nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_list_tasks_all() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        create_task(&conn, "A", None, "low", &pid).unwrap();
+        create_task(&conn, "B", None, "high", &pid).unwrap();
+        let tasks = list_tasks(&conn, &pid, None).unwrap();
+        assert_eq!(tasks.len(), 2);
+        // High priority should come first
+        assert_eq!(tasks[0].priority, "high");
+    }
+
+    #[test]
+    fn test_list_tasks_with_status_filter() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let t = create_task(&conn, "A", None, "medium", &pid).unwrap();
+        create_task(&conn, "B", None, "medium", &pid).unwrap();
+        update_task(&conn, &t.id, "A", None, "done", "medium", None, None).unwrap();
+
+        let done = list_tasks(&conn, &pid, Some("done")).unwrap();
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].title, "A");
+
+        let todo = list_tasks(&conn, &pid, Some("todo")).unwrap();
+        assert_eq!(todo.len(), 1);
+        assert_eq!(todo[0].title, "B");
+    }
+
+    #[test]
+    fn test_update_task_sets_completed_at_on_done() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let task = create_task(&conn, "Complete Me", None, "medium", &pid).unwrap();
+        assert!(task.completed_at.is_none());
+
+        update_task(&conn, &task.id, "Complete Me", None, "done", "medium", None, None).unwrap();
+        let updated = get_task(&conn, &task.id).unwrap().unwrap();
+        assert_eq!(updated.status, "done");
+        assert!(updated.completed_at.is_some());
+    }
+
+    #[test]
+    fn test_update_task_clears_completed_at_on_undone() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let task = create_task(&conn, "T", None, "medium", &pid).unwrap();
+        update_task(&conn, &task.id, "T", None, "done", "medium", None, None).unwrap();
+        update_task(&conn, &task.id, "T", None, "todo", "medium", None, None).unwrap();
+        let t = get_task(&conn, &task.id).unwrap().unwrap();
+        assert_eq!(t.status, "todo");
+        assert!(t.completed_at.is_none());
+    }
+
+    #[test]
+    fn test_update_task_nonexistent() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let updated = update_task(&conn, "fake", "t", None, "todo", "low", None, None).unwrap();
+        assert!(!updated);
+    }
+
+    #[test]
+    fn test_delete_task() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let task = create_task(&conn, "Bye", None, "low", &pid).unwrap();
+        assert!(delete_task(&conn, &task.id).unwrap());
+        assert!(get_task(&conn, &task.id).unwrap().is_none());
+    }
+
+    // ─── Entity Link tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_create_and_list_entity_links() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let n1 = create_note(&conn, "Note1", "a", &pid).unwrap();
+        let n2 = create_note(&conn, "Note2", "b", &pid).unwrap();
+
+        let link = create_entity_link(&conn, &n1.id, &n2.id, "references", false, Some("see also")).unwrap();
+        assert_eq!(link.source_entity_id, n1.id);
+        assert_eq!(link.target_entity_id, n2.id);
+        assert_eq!(link.relationship_type, "references");
+        assert!(!link.auto_generated);
+
+        // List from source side
+        let links = list_entity_links(&conn, &n1.id).unwrap();
+        assert_eq!(links.len(), 1);
+
+        // List from target side
+        let links = list_entity_links(&conn, &n2.id).unwrap();
+        assert_eq!(links.len(), 1);
+    }
+
+    #[test]
+    fn test_entity_link_upsert() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let n1 = create_note(&conn, "A", "a", &pid).unwrap();
+        let n2 = create_note(&conn, "B", "b", &pid).unwrap();
+
+        create_entity_link(&conn, &n1.id, &n2.id, "related", false, Some("ctx1")).unwrap();
+        // Same source+target+type should upsert
+        let link2 = create_entity_link(&conn, &n1.id, &n2.id, "related", true, Some("ctx2")).unwrap();
+        assert_eq!(link2.context.as_deref(), Some("ctx2"));
+
+        let links = list_entity_links(&conn, &n1.id).unwrap();
+        assert_eq!(links.len(), 1);
+    }
+
+    #[test]
+    fn test_delete_entity_link() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let n1 = create_note(&conn, "A", "a", &pid).unwrap();
+        let n2 = create_note(&conn, "B", "b", &pid).unwrap();
+        let link = create_entity_link(&conn, &n1.id, &n2.id, "ref", false, None).unwrap();
+
+        assert!(delete_entity_link(&conn, &link.id).unwrap());
+        assert!(!delete_entity_link(&conn, &link.id).unwrap()); // already deleted
+        let links = list_entity_links(&conn, &n1.id).unwrap();
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn test_cascade_delete_links_on_entity_delete() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let n1 = create_note(&conn, "A", "a", &pid).unwrap();
+        let n2 = create_note(&conn, "B", "b", &pid).unwrap();
+        create_entity_link(&conn, &n1.id, &n2.id, "ref", false, None).unwrap();
+
+        delete_note(&conn, &n1.id).unwrap();
+        let links = list_entity_links(&conn, &n2.id).unwrap();
+        assert!(links.is_empty());
+    }
+
+    // ─── Entity Search tests ────────────────────────────────────────
+
+    #[test]
+    fn test_search_entities_by_title() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        create_note(&conn, "Rust patterns", "content", &pid).unwrap();
+        create_note(&conn, "Python tips", "content", &pid).unwrap();
+
+        let results = search_entities(&conn, "Rust", None, &pid, 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust patterns");
+    }
+
+    #[test]
+    fn test_search_entities_by_content() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        create_note(&conn, "Note", "The quick brown fox", &pid).unwrap();
+
+        let results = search_entities(&conn, "brown fox", None, &pid, 10).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_entities_with_type_filter() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        create_note(&conn, "Search Note", "content", &pid).unwrap();
+        create_task(&conn, "Search Task", Some("content"), "medium", &pid).unwrap();
+
+        let notes = search_entities(&conn, "Search", Some("note"), &pid, 10).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].entity_type, "note");
+
+        let tasks = search_entities(&conn, "Search", Some("task"), &pid, 10).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].entity_type, "task");
+    }
+
+    #[test]
+    fn test_search_entities_respects_limit() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        for i in 0..5 {
+            create_note(&conn, &format!("Note {}", i), "common keyword", &pid).unwrap();
+        }
+        let results = search_entities(&conn, "common", None, &pid, 3).unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_search_entities_no_match() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        create_note(&conn, "Hello", "world", &pid).unwrap();
+        let results = search_entities(&conn, "zzzzz", None, &pid, 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    // ─── Auto-linking query tests ──────────────────────────────────────
+
+    #[test]
+    fn test_list_entity_titles() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        create_note(&conn, "NoteA", "a", &pid).unwrap();
+        create_task(&conn, "TaskB", None, "medium", &pid).unwrap();
+        let titles = list_entity_titles(&conn, &pid).unwrap();
+        assert_eq!(titles.len(), 2);
+        let names: Vec<&str> = titles.iter().map(|(_, t, _)| t.as_str()).collect();
+        assert!(names.contains(&"NoteA"));
+        assert!(names.contains(&"TaskB"));
+    }
+
+    #[test]
+    fn test_find_entities_by_title() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        create_note(&conn, "SearchPanel", "component", &pid).unwrap();
+        create_note(&conn, "OtherPanel", "different", &pid).unwrap();
+        let results = find_entities_by_title(&conn, "SearchPanel", &pid).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, "note");
+    }
+
+    #[test]
+    fn test_find_entities_by_title_no_match() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let results = find_entities_by_title(&conn, "Nonexistent", &pid).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_find_entities_by_source_file() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        upsert_entity(&conn, "function", "my_func", "src/lib.rs", &pid, "{}").unwrap();
+        upsert_entity(&conn, "class", "MyClass", "src/lib.rs", &pid, "{}").unwrap();
+        let results = find_entities_by_source_file(&conn, "src/lib.rs").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_list_suggested_links() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let n1 = create_note(&conn, "A", "a", &pid).unwrap();
+        let n2 = create_note(&conn, "B", "b", &pid).unwrap();
+        let n3 = create_note(&conn, "C", "c", &pid).unwrap();
+
+        // Auto-generated link with confidence 0.9
+        create_entity_link(&conn, &n1.id, &n2.id, "references", true, Some("ctx")).unwrap();
+        // Manual link
+        create_entity_link(&conn, &n1.id, &n3.id, "related", false, None).unwrap();
+
+        let suggested = list_suggested_links(&conn, &n1.id, 0.5).unwrap();
+        assert_eq!(suggested.len(), 1);
+        assert!(suggested[0].auto_generated);
+    }
+
+    #[test]
+    fn test_confirm_entity_link() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let n1 = create_note(&conn, "A", "a", &pid).unwrap();
+        let n2 = create_note(&conn, "B", "b", &pid).unwrap();
+        let link = create_entity_link(&conn, &n1.id, &n2.id, "references", true, None).unwrap();
+        assert!(link.auto_generated);
+
+        let confirmed = confirm_entity_link(&conn, &link.id).unwrap();
+        assert!(confirmed);
+
+        // Now it should not appear in suggested links
+        let suggested = list_suggested_links(&conn, &n1.id, 0.0).unwrap();
+        assert!(suggested.is_empty());
+    }
+
+    #[test]
+    fn test_confirm_entity_link_nonexistent() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let confirmed = confirm_entity_link(&conn, "fake-id").unwrap();
+        assert!(!confirmed);
+    }
+
+    #[test]
+    fn test_list_entity_links_with_details() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let n1 = create_note(&conn, "NoteA", "content a", &pid).unwrap();
+        let n2 = create_note(&conn, "NoteB", "content b", &pid).unwrap();
+        create_entity_link(&conn, &n1.id, &n2.id, "references", true, Some("see also")).unwrap();
+
+        // From n1's perspective
+        let details = list_entity_links_with_details(&conn, &n1.id).unwrap();
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].linked_entity_id, n2.id);
+        assert_eq!(details[0].linked_entity_title, "NoteB");
+        assert_eq!(details[0].linked_entity_type, "note");
+        assert_eq!(details[0].direction, "outgoing");
+        assert!(details[0].auto_generated);
+
+        // From n2's perspective
+        let details = list_entity_links_with_details(&conn, &n2.id).unwrap();
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].linked_entity_id, n1.id);
+        assert_eq!(details[0].linked_entity_title, "NoteA");
+        assert_eq!(details[0].direction, "incoming");
     }
 }

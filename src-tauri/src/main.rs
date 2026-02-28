@@ -12,6 +12,7 @@ mod pty_commands;
 mod osc_parser;
 mod shell_hooks;
 mod file_commands;
+mod entity_commands;
 
 use std::sync::Mutex;
 use tauri::{Manager, Listener};
@@ -222,6 +223,23 @@ fn main() {
             file_commands::file_stat,
             file_commands::get_workspace_root,
             file_commands::file_list_all,
+            entity_commands::note_create,
+            entity_commands::note_get,
+            entity_commands::note_list,
+            entity_commands::note_update,
+            entity_commands::note_delete,
+            entity_commands::task_create,
+            entity_commands::task_get,
+            entity_commands::task_list,
+            entity_commands::task_update,
+            entity_commands::task_delete,
+            entity_commands::entity_link_create,
+            entity_commands::entity_link_list,
+            entity_commands::entity_link_delete,
+            entity_commands::note_auto_link,
+            entity_commands::entity_link_confirm,
+            entity_commands::entity_links_with_details,
+            entity_commands::entity_search,
         ])
         .build(tauri::generate_context!())
         .expect("error building cortex")

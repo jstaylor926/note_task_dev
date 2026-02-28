@@ -1,4 +1,4 @@
-import { Show, For, createMemo } from 'solid-js';
+import { Show, For, createMemo, createSignal, createEffect, on } from 'solid-js';
 import CodeMirrorEditor from './CodeMirrorEditor';
 import { createEditorStore } from '../lib/editorState';
 import { fileRead, fileWrite } from '../lib/files';
@@ -6,6 +6,8 @@ import { getRunCommand } from '../lib/runFile';
 import { getActiveSessionId } from '../lib/terminalState';
 import { terminalStore } from '../lib/terminalStoreInstance';
 import { ptyWrite } from '../lib/pty';
+import { getLinksForFile } from '../lib/editorLinks';
+import type { LinkWithEntity } from '../lib/entityLinks';
 
 const editorStore = createEditorStore();
 
@@ -62,9 +64,46 @@ function handleKeyDown(e: KeyboardEvent) {
   }
 }
 
+const TYPE_COLORS: Record<string, string> = {
+  note: '#6366f1',
+  task: '#f59e0b',
+  function: '#10b981',
+  class: '#3b82f6',
+  struct: '#8b5cf6',
+  file: '#64748b',
+};
+
 function EditorPanel() {
   const activeFile = createMemo(() => editorStore.getActiveFile());
   const isLarge = createMemo(() => editorStore.isLargeFile());
+  const [relatedLinks, setRelatedLinks] = createSignal<LinkWithEntity[]>([]);
+  const [showRelated, setShowRelated] = createSignal(false);
+
+  // Load related links when the active file changes
+  createEffect(
+    on(
+      () => activeFile()?.path,
+      (path) => {
+        setRelatedLinks([]);
+        setShowRelated(false);
+        if (path) {
+          getLinksForFile(path).then(setRelatedLinks).catch(() => {});
+        }
+      },
+    ),
+  );
+
+  function handleRelatedClick(link: LinkWithEntity) {
+    setShowRelated(false);
+    if (link.linked_entity_type === 'note') {
+      // Navigate to note via noteStore
+      import('../lib/noteStoreInstance').then(({ noteStore }) => {
+        noteStore.selectNote(link.linked_entity_id);
+      });
+    } else if (link.linked_source_file) {
+      handleOpenFile(link.linked_source_file);
+    }
+  }
 
   return (
     <div
@@ -118,14 +157,51 @@ function EditorPanel() {
         </div>
       </Show>
 
-      {/* Editor header bar showing language */}
+      {/* Editor header bar showing language + related links */}
       <Show when={activeFile()}>
         {(file) => (
-          <div class="h-6 flex items-center px-3 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] shrink-0">
+          <div class="h-6 flex items-center px-3 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] shrink-0 relative">
             <Show when={isLarge()}>
               <span class="text-xs text-[var(--color-error)] mr-2">
                 Large file - read-only mode
               </span>
+            </Show>
+            <Show when={relatedLinks().length > 0}>
+              <button
+                onClick={() => setShowRelated(!showRelated())}
+                class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-accent)]/20 text-[var(--color-accent)] hover:bg-[var(--color-accent)]/30 transition-colors"
+                data-testid="related-links-badge"
+              >
+                {relatedLinks().length} {relatedLinks().length === 1 ? 'link' : 'links'}
+              </button>
+              <Show when={showRelated()}>
+                <div class="absolute top-6 left-2 z-50 w-64 bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded shadow-lg" data-testid="related-links-dropdown">
+                  <div class="px-2 py-1.5 border-b border-[var(--color-border)] text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-secondary)]">
+                    Related
+                  </div>
+                  <div class="max-h-48 overflow-y-auto">
+                    <For each={relatedLinks()}>
+                      {(link) => (
+                        <button
+                          onClick={() => handleRelatedClick(link)}
+                          class="w-full flex items-center gap-1.5 px-2 py-1.5 text-left hover:bg-[var(--color-bg-panel)] transition-colors"
+                          data-testid="related-link-item"
+                        >
+                          <span
+                            class="inline-block px-1 py-0.5 rounded text-[8px] font-medium text-white flex-shrink-0"
+                            style={{ 'background-color': TYPE_COLORS[link.linked_entity_type] ?? '#64748b' }}
+                          >
+                            {link.linked_entity_type}
+                          </span>
+                          <span class="text-[11px] text-[var(--color-text-primary)] truncate">
+                            {link.linked_entity_title}
+                          </span>
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                </div>
+              </Show>
             </Show>
             <span class="ml-auto text-xs text-[var(--color-text-secondary)] font-mono">
               {file().language ?? 'plain text'}
