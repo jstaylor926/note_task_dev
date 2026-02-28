@@ -35,24 +35,6 @@ describe('SearchPanel', () => {
     expect(input.placeholder).toContain('Search');
   });
 
-  it('renders Cmd+K shortcut hint', async () => {
-    const { default: SearchPanel } = await import('../SearchPanel');
-    const { container } = render(() => <SearchPanel />);
-    const kbd = container.querySelector('kbd');
-    expect(kbd).toBeTruthy();
-    expect(kbd!.textContent).toContain('K');
-  });
-
-  it('focuses input on Cmd+K', async () => {
-    const { default: SearchPanel } = await import('../SearchPanel');
-    const { container } = render(() => <SearchPanel />);
-    const input = container.querySelector('input') as HTMLInputElement;
-
-    fireEvent.keyDown(document, { key: 'k', metaKey: true });
-
-    expect(document.activeElement).toBe(input);
-  });
-
   it('renders language filter dropdown', async () => {
     const { default: SearchPanel } = await import('../SearchPanel');
     const { container } = render(() => <SearchPanel />);

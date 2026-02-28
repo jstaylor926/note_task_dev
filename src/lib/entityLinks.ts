@@ -54,3 +54,14 @@ export async function entityLinkConfirm(linkId: string): Promise<boolean> {
 export async function entityLinksWithDetails(entityId: string): Promise<LinkWithEntity[]> {
   return invoke<LinkWithEntity[]>('entity_links_with_details', { entityId });
 }
+
+export async function listSuggestedLinks(entityId: string, minConfidence?: number): Promise<EntityLinkRow[]> {
+  return invoke<EntityLinkRow[]>('list_suggested_links', {
+    entityId,
+    minConfidence: minConfidence ?? null,
+  });
+}
+
+export async function countSuggestedLinks(): Promise<number> {
+  return invoke<number>('count_suggested_links');
+}

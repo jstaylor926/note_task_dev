@@ -7,15 +7,24 @@ import TaskPanel from '../components/TaskPanel';
 import IndexingStatus from '../components/IndexingStatus';
 import SearchPanel from '../components/SearchPanel';
 import FileFinder from '../components/FileFinder';
+import UniversalSearch from '../components/UniversalSearch';
+import { noteStore } from '../lib/noteStoreInstance';
+import { taskStore } from '../lib/taskStoreInstance';
+import type { UniversalSearchResult } from '../lib/universalSearch';
 
 function WorkspaceLayout() {
   const [showFileFinder, setShowFileFinder] = createSignal(false);
+  const [showUniversalSearch, setShowUniversalSearch] = createSignal(false);
 
   function handleGlobalKeyDown(e: KeyboardEvent) {
     const meta = e.metaKey || e.ctrlKey;
     if (meta && e.key === 'p') {
       e.preventDefault();
       setShowFileFinder((prev) => !prev);
+    }
+    if (meta && e.key === 'k') {
+      e.preventDefault();
+      setShowUniversalSearch((prev) => !prev);
     }
   }
 
@@ -29,6 +38,17 @@ function WorkspaceLayout() {
   function handleFileFinderSelect(path: string) {
     setShowFileFinder(false);
     handleOpenFile(path);
+  }
+
+  function handleUniversalSearchSelect(result: UniversalSearchResult) {
+    setShowUniversalSearch(false);
+    if (result.result_type === 'note') {
+      noteStore.selectNote(result.id);
+    } else if (result.result_type === 'task') {
+      taskStore.setEditingTask(result.id);
+    } else if (result.source_file) {
+      handleOpenFile(result.source_file);
+    }
   }
 
   return (
@@ -79,6 +99,14 @@ function WorkspaceLayout() {
         <FileFinder
           onSelect={handleFileFinderSelect}
           onClose={() => setShowFileFinder(false)}
+        />
+      </Show>
+
+      {/* Universal search overlay */}
+      <Show when={showUniversalSearch()}>
+        <UniversalSearch
+          onSelect={handleUniversalSearchSelect}
+          onClose={() => setShowUniversalSearch(false)}
         />
       </Show>
     </div>

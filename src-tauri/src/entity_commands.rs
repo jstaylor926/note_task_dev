@@ -363,6 +363,41 @@ pub async fn extract_tasks_from_terminal(
     Ok(created)
 }
 
+// ─── Link Suggestion commands ────────────────────────────────────────
+
+#[tauri::command]
+pub fn list_suggested_links(
+    entity_id: String,
+    min_confidence: Option<f64>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<db::EntityLinkRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let min_conf = min_confidence.unwrap_or(0.70);
+    db::list_suggested_links(&conn, &entity_id, min_conf).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn count_suggested_links(
+    state: tauri::State<'_, AppState>,
+) -> Result<usize, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let profile_id = db::get_active_profile_id(&conn)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "default".to_string());
+    db::count_suggested_links(&conn, &profile_id).map_err(|e| e.to_string())
+}
+
+// ─── Task Lineage commands ──────────────────────────────────────────
+
+#[tauri::command]
+pub fn task_lineage_batch(
+    task_ids: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<db::TaskLineageRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::get_task_lineages(&conn, &task_ids).map_err(|e| e.to_string())
+}
+
 // ─── Entity Search command ───────────────────────────────────────────
 
 #[tauri::command]

@@ -53,3 +53,15 @@ export async function taskDelete(id: string): Promise<boolean> {
 export async function extractTasksFromTerminal(output: string): Promise<TaskRow[]> {
   return invoke<TaskRow[]>('extract_tasks_from_terminal', { output });
 }
+
+export interface TaskLineage {
+  task_id: string;
+  source_entity_id: string;
+  source_entity_title: string;
+  source_entity_type: string;
+  source_file: string | null;
+}
+
+export async function taskLineageBatch(taskIds: string[]): Promise<TaskLineage[]> {
+  return invoke<TaskLineage[]>('task_lineage_batch', { taskIds });
+}

@@ -5,12 +5,14 @@ const mockTaskList = vi.fn();
 const mockTaskCreate = vi.fn();
 const mockTaskUpdate = vi.fn();
 const mockTaskDelete = vi.fn();
+const mockTaskLineageBatch = vi.fn();
 
 vi.mock('../tasks', () => ({
   taskList: (...args: unknown[]) => mockTaskList(...args),
   taskCreate: (...args: unknown[]) => mockTaskCreate(...args),
   taskUpdate: (...args: unknown[]) => mockTaskUpdate(...args),
   taskDelete: (...args: unknown[]) => mockTaskDelete(...args),
+  taskLineageBatch: (...args: unknown[]) => mockTaskLineageBatch(...args),
 }));
 
 beforeEach(() => {
@@ -269,6 +271,43 @@ describe('taskState', () => {
       expect(store.state.editingTaskId).toBe('t1');
       store.setEditingTask(null);
       expect(store.state.editingTaskId).toBeNull();
+      dispose();
+    });
+  });
+
+  // ─── Phase 5d tests: Lineage ──────────────────────────────────────
+
+  it('loadTasks loads lineages for non-manual tasks', async () => {
+    const tasks = [
+      makeTask({ id: 't1', source_type: 'note' }),
+      makeTask({ id: 't2', source_type: null }),
+    ];
+    const lineages = [
+      { task_id: 't1', source_entity_id: 'n1', source_entity_title: 'My Note', source_entity_type: 'note', source_file: null },
+    ];
+    mockTaskList.mockResolvedValue(tasks);
+    mockTaskLineageBatch.mockResolvedValue(lineages);
+    const { createTaskStore } = await import('../taskState');
+
+    await createRoot(async (dispose) => {
+      const store = createTaskStore();
+      await store.loadTasks();
+      expect(mockTaskLineageBatch).toHaveBeenCalledWith(['t1']);
+      expect(store.getLineage('t1')).toEqual(lineages[0]);
+      dispose();
+    });
+  });
+
+  it('getLineage returns null for manual tasks', async () => {
+    const tasks = [makeTask({ id: 't1', source_type: null })];
+    mockTaskList.mockResolvedValue(tasks);
+    mockTaskLineageBatch.mockResolvedValue([]);
+    const { createTaskStore } = await import('../taskState');
+
+    await createRoot(async (dispose) => {
+      const store = createTaskStore();
+      await store.loadTasks();
+      expect(store.getLineage('t1')).toBeNull();
       dispose();
     });
   });

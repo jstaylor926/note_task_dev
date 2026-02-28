@@ -1,4 +1,4 @@
-import { createSignal, For, Show, onMount, onCleanup } from 'solid-js';
+import { createSignal, For, Show } from 'solid-js';
 import { semanticSearch, type SearchResult, type SearchFilters } from '../lib/tauri';
 import { entitySearch, type EntitySearchResult } from '../lib/entitySearch';
 import { noteStore } from '../lib/noteStoreInstance';
@@ -42,23 +42,6 @@ function SearchPanel() {
   const [languageFilter, setLanguageFilter] = createSignal('');
   const [sourceTypeFilter, setSourceTypeFilter] = createSignal('');
   const [scope, setScope] = createSignal<SearchScope>('code');
-
-  let inputRef: HTMLInputElement | undefined;
-
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-      e.preventDefault();
-      inputRef?.focus();
-    }
-  };
-
-  onMount(() => {
-    document.addEventListener('keydown', handleKeyDown);
-  });
-
-  onCleanup(() => {
-    document.removeEventListener('keydown', handleKeyDown);
-  });
 
   const handleSearch = async (e: Event) => {
     e.preventDefault();
@@ -126,9 +109,6 @@ function SearchPanel() {
           <div class="text-xs font-medium uppercase tracking-wider text-[var(--color-text-secondary)]">
             Search
           </div>
-          <kbd class="text-[10px] px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-text-secondary)] bg-[var(--color-bg-primary)]">
-            {navigator.userAgent.includes('Mac') ? '⌘' : 'Ctrl'}+K
-          </kbd>
         </div>
 
         {/* Scope toggle */}
@@ -161,7 +141,6 @@ function SearchPanel() {
 
         <div class="flex gap-2 mb-2">
           <input
-            ref={inputRef}
             type="text"
             value={query()}
             onInput={(e) => setQuery(e.currentTarget.value)}

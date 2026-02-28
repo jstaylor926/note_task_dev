@@ -237,6 +237,53 @@ describe('TaskPanel', () => {
     expect(sortSelect).not.toBeNull();
   });
 
+  // ─── Phase 5d tests: Task Lineage ─────────────────────────────────
+
+  it('task with lineage shows source entity title', async () => {
+    const tasks = [makeTask({ id: 't1', title: 'Auto Task', source_type: 'note' })];
+    const lineages = [
+      { task_id: 't1', source_entity_id: 'n1', source_entity_title: 'My Note', source_entity_type: 'note', source_file: null },
+    ];
+    (invoke as ReturnType<typeof vi.fn>).mockImplementation((cmd: string) => {
+      if (cmd === 'task_list') return Promise.resolve(tasks);
+      if (cmd === 'task_lineage_batch') return Promise.resolve(lineages);
+      return Promise.resolve([]);
+    });
+
+    const { default: TaskPanel } = await import('../TaskPanel');
+    const { container } = render(() => <TaskPanel />);
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain('Auto Task');
+    });
+
+    await vi.waitFor(() => {
+      const lineageEl = container.querySelector('[data-testid="lineage-t1"]');
+      expect(lineageEl).not.toBeNull();
+      expect(lineageEl?.textContent).toContain('From: My Note');
+    });
+  });
+
+  it('manual task does not show lineage', async () => {
+    const tasks = [makeTask({ id: 't5', title: 'Manual Task', source_type: null })];
+    (invoke as ReturnType<typeof vi.fn>).mockImplementation((cmd: string) => {
+      if (cmd === 'task_list') return Promise.resolve(tasks);
+      if (cmd === 'task_lineage_batch') return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+
+    const { default: TaskPanel } = await import('../TaskPanel');
+    const { container } = render(() => <TaskPanel />);
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain('Manual Task');
+    });
+
+    // Give time for potential lineage to render
+    await new Promise(r => setTimeout(r, 50));
+    expect(container.querySelector('[data-testid="lineage-t5"]')).toBeNull();
+  });
+
   it('group by status shows section headers', async () => {
     const tasks = [
       makeTask({ id: 't1', status: 'todo', title: 'A' }),

@@ -213,6 +213,7 @@ fn main() {
             commands::get_app_status,
             commands::semantic_search,
             commands::get_indexing_status,
+            commands::universal_search,
             pty_commands::pty_create,
             pty_commands::pty_write,
             pty_commands::pty_resize,
@@ -241,6 +242,9 @@ fn main() {
             entity_commands::entity_links_with_details,
             entity_commands::extract_tasks_from_terminal,
             entity_commands::entity_search,
+            entity_commands::list_suggested_links,
+            entity_commands::count_suggested_links,
+            entity_commands::task_lineage_batch,
         ])
         .build(tauri::generate_context!())
         .expect("error building cortex")

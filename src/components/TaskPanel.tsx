@@ -1,4 +1,4 @@
-import { createSignal, For, Show, onMount } from 'solid-js';
+import { createSignal, For, Show, onMount, createMemo } from 'solid-js';
 import { taskStore, type TaskFilter, type TaskSortBy, type TaskGroupBy } from '../lib/taskStoreInstance';
 import type { TaskRow } from '../lib/tasks';
 
@@ -174,16 +174,28 @@ function TaskCard(props: { task: TaskRow }) {
           data-testid={`status-${props.task.id}`}
         />
 
-        {/* Title */}
-        <span
-          class={`flex-1 text-xs truncate ${
-            props.task.status === 'done'
-              ? 'line-through text-[var(--color-text-secondary)]'
-              : 'text-[var(--color-text-primary)]'
-          }`}
-        >
-          {props.task.title}
-        </span>
+        {/* Title and lineage */}
+        <div class="flex-1 min-w-0">
+          <span
+            class={`text-xs truncate block ${
+              props.task.status === 'done'
+                ? 'line-through text-[var(--color-text-secondary)]'
+                : 'text-[var(--color-text-primary)]'
+            }`}
+          >
+            {props.task.title}
+          </span>
+          <Show when={taskStore.getLineage(props.task.id)}>
+            {(lineage) => (
+              <span
+                class="text-[9px] text-[var(--color-text-secondary)] truncate block"
+                data-testid={`lineage-${props.task.id}`}
+              >
+                From: {lineage().source_entity_title}
+              </span>
+            )}
+          </Show>
+        </div>
 
         {/* Source badge */}
         <SourceBadge sourceType={props.task.source_type} />

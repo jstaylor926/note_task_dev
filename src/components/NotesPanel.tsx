@@ -1,6 +1,7 @@
 import { createSignal, For, Show, onMount, onCleanup } from 'solid-js';
 import { noteStore } from '../lib/noteStoreInstance';
 import type { LinkWithEntity } from '../lib/entityLinks';
+import { entityLinkConfirm, entityLinkDelete } from '../lib/entityLinks';
 
 const TYPE_COLORS: Record<string, string> = {
   note: '#6366f1',
@@ -110,6 +111,27 @@ function NotesPanel() {
     }
   }
 
+  const suggestedCount = () =>
+    noteStore.state.activeNoteLinks.filter(
+      (l) => l.auto_generated && l.confidence >= 0.70 && l.confidence < 0.85,
+    ).length;
+
+  function isSuggested(link: LinkWithEntity): boolean {
+    return link.auto_generated && link.confidence >= 0.70 && link.confidence < 0.85;
+  }
+
+  async function handleConfirmLink(linkId: string) {
+    await entityLinkConfirm(linkId);
+    const active = noteStore.getActiveNote();
+    if (active) noteStore.selectNote(active.id);
+  }
+
+  async function handleDismissLink(linkId: string) {
+    await entityLinkDelete(linkId);
+    const active = noteStore.getActiveNote();
+    if (active) noteStore.selectNote(active.id);
+  }
+
   const activeNote = () => noteStore.getActiveNote();
 
   return (
@@ -213,14 +235,22 @@ function NotesPanel() {
                   >
                     <span class="text-[8px]">{linksExpanded() ? '\u25BC' : '\u25B6'}</span>
                     Links ({noteStore.state.activeNoteLinks.length})
+                    <Show when={suggestedCount() > 0}>
+                      <span
+                        class="ml-1 px-1.5 py-0.5 rounded-full text-[8px] bg-[var(--color-accent)] text-white"
+                        data-testid="suggestion-count"
+                      >
+                        {suggestedCount()} suggested
+                      </span>
+                    </Show>
                   </button>
                   <Show when={linksExpanded()}>
                     <div class="px-2 pb-2 space-y-1 max-h-32 overflow-y-auto">
                       <For each={noteStore.state.activeNoteLinks}>
                         {(link) => (
-                          <button
+                          <div
                             onClick={() => handleLinkClick(link)}
-                            class="w-full flex items-center gap-1.5 px-2 py-1 rounded text-left hover:bg-[var(--color-bg-panel)] transition-colors group"
+                            class="w-full flex items-center gap-1.5 px-2 py-1 rounded text-left hover:bg-[var(--color-bg-panel)] transition-colors group cursor-pointer"
                             data-testid="link-item"
                           >
                             <span
@@ -235,12 +265,30 @@ function NotesPanel() {
                             <span class="text-[9px] text-[var(--color-text-secondary)] flex-shrink-0 ml-auto">
                               {Math.round(link.confidence * 100)}%
                             </span>
-                            <Show when={link.auto_generated}>
+                            <Show when={isSuggested(link)}>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleConfirmLink(link.link_id); }}
+                                class="text-[10px] text-[var(--color-success)] hover:bg-[var(--color-bg-primary)] px-1 rounded flex-shrink-0"
+                                data-testid={`confirm-link-${link.link_id}`}
+                                title="Confirm link"
+                              >
+                                &#10003;
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleDismissLink(link.link_id); }}
+                                class="text-[10px] text-[var(--color-error)] hover:bg-[var(--color-bg-primary)] px-1 rounded flex-shrink-0"
+                                data-testid={`dismiss-link-${link.link_id}`}
+                                title="Dismiss link"
+                              >
+                                &#10005;
+                              </button>
+                            </Show>
+                            <Show when={link.auto_generated && !isSuggested(link)}>
                               <span class="text-[8px] text-[var(--color-text-secondary)] opacity-60 flex-shrink-0" data-testid="auto-badge">
                                 auto
                               </span>
                             </Show>
-                          </button>
+                          </div>
                         )}
                       </For>
                     </div>

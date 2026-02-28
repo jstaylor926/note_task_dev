@@ -1,4 +1,5 @@
 use crate::AppState;
+use crate::db;
 use crate::events;
 
 #[derive(serde::Serialize)]
@@ -155,4 +156,204 @@ pub fn get_indexing_status(
         current_file: indexing.current_file.clone(),
         is_idle: indexing.is_idle(),
     })
+}
+
+// ─── Universal Search ────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct UniversalSearchResult {
+    pub id: String,
+    pub result_type: String,
+    pub title: String,
+    pub snippet: Option<String>,
+    pub source_file: Option<String>,
+    pub relevance_score: f64,
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(serde::Serialize)]
+pub struct UniversalSearchResponse {
+    pub results: Vec<UniversalSearchResult>,
+    pub query: String,
+    pub code_count: usize,
+    pub entity_count: usize,
+}
+
+/// Compute a relevance score for an entity based on query match quality and recency.
+pub fn compute_entity_score(title: &str, content: Option<&str>, query: &str, updated_at: &str) -> f64 {
+    let title_lower = title.to_lowercase();
+    let query_lower = query.to_lowercase();
+
+    let mut score: f64 = if title_lower == query_lower {
+        0.95
+    } else if title_lower.contains(&query_lower) {
+        0.80
+    } else if content.map(|c| c.to_lowercase().contains(&query_lower)).unwrap_or(false) {
+        0.60
+    } else {
+        0.50
+    };
+
+    // Recency boost
+    if let Ok(updated) = chrono_parse_rough(updated_at) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let diff_secs = now.saturating_sub(updated);
+        if diff_secs < 86400 {
+            score += 0.05; // last 24h
+        } else if diff_secs < 604800 {
+            score += 0.02; // last 7 days
+        }
+    }
+
+    score.min(1.0)
+}
+
+/// Rough parse of an ISO 8601 / SQLite timestamp into epoch seconds.
+fn chrono_parse_rough(ts: &str) -> Result<u64, ()> {
+    // Expect "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS"
+    let ts = ts.replace('T', " ");
+    let parts: Vec<&str> = ts.split(' ').collect();
+    if parts.is_empty() { return Err(()); }
+    let date_parts: Vec<u64> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
+    if date_parts.len() < 3 { return Err(()); }
+    let (y, m, d) = (date_parts[0], date_parts[1], date_parts[2]);
+    // Rough epoch calculation (not precise, but good enough for recency comparison)
+    let days = (y - 1970) * 365 + (m - 1) * 30 + d;
+    let mut secs = days * 86400;
+    if parts.len() > 1 {
+        let time_parts: Vec<u64> = parts[1].split(':').filter_map(|p| p.parse().ok()).collect();
+        if time_parts.len() >= 2 {
+            secs += time_parts[0] * 3600 + time_parts[1] * 60;
+            if time_parts.len() >= 3 { secs += time_parts[2]; }
+        }
+    }
+    Ok(secs)
+}
+
+#[tauri::command]
+pub async fn universal_search(
+    query: String,
+    limit: Option<usize>,
+    state: tauri::State<'_, AppState>,
+) -> Result<UniversalSearchResponse, String> {
+    let limit = limit.unwrap_or(20);
+    let sidecar_url = state.sidecar_url.clone();
+
+    // Entity search (scoped lock, dropped before any .await)
+    let entity_results = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let profile_id = db::get_active_profile_id(&db)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| "default".to_string());
+        db::search_entities(&db, &query, None, &profile_id, limit)
+            .map_err(|e| e.to_string())?
+    };
+
+    // Vector search via sidecar
+    let client = reqwest::Client::new();
+    let url = format!("{}/search", sidecar_url);
+    let code_results: Vec<serde_json::Value> = match client
+        .get(&url)
+        .query(&[("query", query.as_str()), ("limit", &limit.to_string())])
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            body.get("results")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+        }
+        Err(_) => vec![],
+    };
+
+    // Map code results to UniversalSearchResult
+    let code_count = code_results.len();
+    let mut merged: Vec<UniversalSearchResult> = code_results
+        .iter()
+        .map(|r| {
+            let chunk_type = r.get("chunk_type").and_then(|v| v.as_str()).unwrap_or("code");
+            let result_type = if chunk_type == "function" || chunk_type == "class" || chunk_type == "struct" {
+                chunk_type.to_string()
+            } else {
+                "code".to_string()
+            };
+            UniversalSearchResult {
+                id: r.get("source_file").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                result_type,
+                title: r.get("entity_name")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| r.get("source_file").and_then(|v| v.as_str()))
+                    .unwrap_or("unknown")
+                    .to_string(),
+                snippet: r.get("text").and_then(|v| v.as_str()).map(|s| {
+                    if s.len() > 200 { format!("{}...", &s[..200]) } else { s.to_string() }
+                }),
+                source_file: r.get("source_file").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                relevance_score: r.get("relevance_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                metadata: None,
+            }
+        })
+        .collect();
+
+    // Map entity results to UniversalSearchResult with computed scores
+    let entity_count = entity_results.len();
+    for entity in &entity_results {
+        let score = compute_entity_score(
+            &entity.title,
+            entity.content.as_deref(),
+            &query,
+            &entity.updated_at,
+        );
+        merged.push(UniversalSearchResult {
+            id: entity.id.clone(),
+            result_type: entity.entity_type.clone(),
+            title: entity.title.clone(),
+            snippet: entity.content.as_ref().map(|c| {
+                if c.len() > 200 { format!("{}...", &c[..200]) } else { c.clone() }
+            }),
+            source_file: entity.source_file.clone(),
+            relevance_score: score,
+            metadata: None,
+        });
+    }
+
+    // Sort by relevance desc
+    merged.sort_by(|a, b| b.relevance_score.partial_cmp(&a.relevance_score).unwrap_or(std::cmp::Ordering::Equal));
+    merged.truncate(limit);
+
+    Ok(UniversalSearchResponse {
+        results: merged,
+        query,
+        code_count,
+        entity_count,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_entity_score_exact_title_match() {
+        let score = compute_entity_score("SearchPanel", None, "SearchPanel", "2020-01-01 00:00:00");
+        assert!((score - 0.95).abs() < 0.001, "Exact match score should be 0.95, got {}", score);
+    }
+
+    #[test]
+    fn test_compute_entity_score_title_contains() {
+        let score = compute_entity_score("My SearchPanel Component", None, "SearchPanel", "2020-01-01 00:00:00");
+        assert!((score - 0.80).abs() < 0.001, "Contains match should be 0.80, got {}", score);
+    }
+
+    #[test]
+    fn test_compute_entity_score_content_only() {
+        let score = compute_entity_score("Unrelated Title", Some("mentions SearchPanel here"), "SearchPanel", "2020-01-01 00:00:00");
+        assert!((score - 0.60).abs() < 0.001, "Content-only match should be 0.60, got {}", score);
+    }
 }

@@ -1,7 +1,7 @@
 import { createStore, produce } from 'solid-js/store';
 import { createMemo } from 'solid-js';
-import type { TaskRow } from './tasks';
-import { taskCreate, taskDelete, taskList, taskUpdate } from './tasks';
+import type { TaskRow, TaskLineage } from './tasks';
+import { taskCreate, taskDelete, taskList, taskUpdate, taskLineageBatch } from './tasks';
 
 export type TaskFilter = 'all' | 'todo' | 'in_progress' | 'done';
 export type TaskViewMode = 'list' | 'kanban';
@@ -35,6 +35,7 @@ interface TaskState {
   sortBy: TaskSortBy;
   groupBy: TaskGroupBy;
   editingTaskId: string | null;
+  lineageMap: Record<string, TaskLineage | null>;
 }
 
 export function createTaskStore() {
@@ -47,6 +48,7 @@ export function createTaskStore() {
     sortBy: 'created',
     groupBy: 'none',
     editingTaskId: null,
+    lineageMap: {},
   });
 
   const filteredTasks = createMemo(() => {
@@ -127,6 +129,8 @@ export function createTaskStore() {
           s.isLoading = false;
         }),
       );
+      // Load lineages for non-manual tasks
+      await loadLineages(tasks);
     } catch (err) {
       setState(
         produce((s) => {
@@ -135,6 +139,35 @@ export function createTaskStore() {
         }),
       );
     }
+  }
+
+  async function loadLineages(tasks?: TaskRow[]) {
+    const allTasks = tasks ?? state.tasks;
+    const nonManualIds = allTasks
+      .filter((t) => t.source_type !== null)
+      .map((t) => t.id);
+    if (nonManualIds.length === 0) return;
+    try {
+      const lineages = await taskLineageBatch(nonManualIds);
+      setState(
+        produce((s) => {
+          // Initialize all queried ids as null (no lineage found)
+          for (const id of nonManualIds) {
+            s.lineageMap[id] = null;
+          }
+          // Set actual lineages
+          for (const l of lineages) {
+            s.lineageMap[l.task_id] = l;
+          }
+        }),
+      );
+    } catch {
+      // Lineage is non-critical, silently ignore
+    }
+  }
+
+  function getLineage(taskId: string): TaskLineage | null {
+    return state.lineageMap[taskId] ?? null;
   }
 
   async function createTask(title: string, priority: string = 'medium') {
@@ -271,5 +304,7 @@ export function createTaskStore() {
     setGroupBy,
     setEditingTask,
     updateTaskInline,
+    loadLineages,
+    getLineage,
   };
 }

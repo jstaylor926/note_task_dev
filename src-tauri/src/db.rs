@@ -798,6 +798,19 @@ pub fn list_suggested_links(conn: &Connection, entity_id: &str, min_confidence: 
     rows.collect()
 }
 
+/// Count suggested links across the workspace (auto_generated=true, confidence in [0.70, 0.85)).
+pub fn count_suggested_links(conn: &Connection, profile_id: &str) -> Result<usize> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM entity_links el
+         JOIN entities e ON e.id = el.source_entity_id
+         WHERE el.auto_generated = 1 AND el.confidence >= 0.70 AND el.confidence < 0.85
+           AND e.workspace_profile_id = ?1",
+        params![profile_id],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
 /// Confirm a suggested link (set auto_generated = false). Returns true if updated.
 pub fn confirm_entity_link(conn: &Connection, link_id: &str) -> Result<bool> {
     let updated = conn.execute(
@@ -879,6 +892,44 @@ pub fn search_entities(
         let result = stmt.query_map(params![profile_id, like_pattern, limit as i64], read_search_row)?.collect();
         result
     }
+}
+
+// ─── Task Lineage ────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TaskLineageRow {
+    pub task_id: String,
+    pub source_entity_id: String,
+    pub source_entity_title: String,
+    pub source_entity_type: String,
+    pub source_file: Option<String>,
+}
+
+/// For each task_id, find the incoming 'contains_task' link and join the source entity.
+pub fn get_task_lineages(conn: &Connection, task_ids: &[String]) -> Result<Vec<TaskLineageRow>> {
+    if task_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let placeholders: Vec<String> = task_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+    let sql = format!(
+        "SELECT el.target_entity_id, el.source_entity_id, e.title, e.entity_type, e.source_file
+         FROM entity_links el
+         JOIN entities e ON e.id = el.source_entity_id
+         WHERE el.relationship_type = 'contains_task' AND el.target_entity_id IN ({})",
+        placeholders.join(", ")
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = task_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+    let rows = stmt.query_map(params.as_slice(), |row| {
+        Ok(TaskLineageRow {
+            task_id: row.get(0)?,
+            source_entity_id: row.get(1)?,
+            source_entity_title: row.get(2)?,
+            source_entity_type: row.get(3)?,
+            source_file: row.get(4)?,
+        })
+    })?;
+    rows.collect()
 }
 
 #[cfg(test)]
@@ -1495,5 +1546,65 @@ mod tests {
         assert_eq!(details[0].linked_entity_id, n1.id);
         assert_eq!(details[0].linked_entity_title, "NoteA");
         assert_eq!(details[0].direction, "incoming");
+    }
+
+    // ─── count_suggested_links tests ─────────────────────────────────
+
+    #[test]
+    fn test_count_suggested_links_counts_mid_confidence() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let n1 = create_note(&conn, "A", "a", &pid).unwrap();
+        let n2 = create_note(&conn, "B", "b", &pid).unwrap();
+        let n3 = create_note(&conn, "C", "c", &pid).unwrap();
+        let n4 = create_note(&conn, "D", "d", &pid).unwrap();
+
+        // Mid-confidence auto link (should be counted)
+        create_entity_link_with_confidence(&conn, &n1.id, &n2.id, "references", 0.75, true, None).unwrap();
+        // High-confidence auto link (should NOT be counted - >= 0.85)
+        create_entity_link_with_confidence(&conn, &n1.id, &n3.id, "references", 0.90, true, None).unwrap();
+        // Manual link (should NOT be counted)
+        create_entity_link(&conn, &n1.id, &n4.id, "related", false, None).unwrap();
+
+        let count = count_suggested_links(&conn, &pid).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_count_suggested_links_empty() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let count = count_suggested_links(&conn, &pid).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // ─── get_task_lineages tests ─────────────────────────────────────
+
+    #[test]
+    fn test_get_task_lineages_with_lineage() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let note = create_note(&conn, "My Note", "content", &pid).unwrap();
+        let task = create_task(&conn, "Fix bug", Some("from note"), "medium", &pid, Some("note")).unwrap();
+
+        // Create contains_task link from note to task
+        create_entity_link(&conn, &note.id, &task.id, "contains_task", true, None).unwrap();
+
+        let lineages = get_task_lineages(&conn, &[task.id.clone()]).unwrap();
+        assert_eq!(lineages.len(), 1);
+        assert_eq!(lineages[0].task_id, task.id);
+        assert_eq!(lineages[0].source_entity_id, note.id);
+        assert_eq!(lineages[0].source_entity_title, "My Note");
+        assert_eq!(lineages[0].source_entity_type, "note");
+    }
+
+    #[test]
+    fn test_get_task_lineages_without_lineage() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let task = create_task(&conn, "Manual task", None, "medium", &pid, None).unwrap();
+
+        let lineages = get_task_lineages(&conn, &[task.id.clone()]).unwrap();
+        assert!(lineages.is_empty());
     }
 }
