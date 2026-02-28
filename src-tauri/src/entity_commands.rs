@@ -64,13 +64,14 @@ pub fn task_create(
     title: String,
     content: Option<String>,
     priority: String,
+    source_type: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<db::TaskRow, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let profile_id = db::get_active_profile_id(&conn)
         .map_err(|e| e.to_string())?
         .unwrap_or_else(|| "default".to_string());
-    db::create_task(&conn, &title, content.as_deref(), &priority, &profile_id)
+    db::create_task(&conn, &title, content.as_deref(), &priority, &profile_id, source_type.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -209,6 +210,51 @@ pub async fn note_auto_link(
     {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         for extracted_ref in &refs_response.references {
+            // Handle action items: auto-extract tasks from TODO/FIXME markers
+            if extracted_ref.ref_type == "action_item" {
+                let ctx_end = content[extracted_ref.start..]
+                    .find('\n')
+                    .map(|i| extracted_ref.start + i)
+                    .unwrap_or(content.len());
+                let task_title = content[extracted_ref.start..ctx_end].trim().to_string();
+
+                if task_title.is_empty() {
+                    continue;
+                }
+
+                // Dedup: skip if task with same title already exists
+                if db::find_task_by_title(&conn, &task_title, &profile_id)
+                    .unwrap_or(None)
+                    .is_some()
+                {
+                    continue;
+                }
+
+                // Create task with source_type="note"
+                if let Ok(task) = db::create_task(
+                    &conn,
+                    &task_title,
+                    Some(&format!("From note: {}", title)),
+                    "medium",
+                    &profile_id,
+                    Some("note"),
+                ) {
+                    // Link the new task to the note
+                    if let Ok(link) = db::create_entity_link_with_confidence(
+                        &conn,
+                        &id,
+                        &task.id,
+                        "contains_task",
+                        extracted_ref.confidence,
+                        true,
+                        Some(&task_title),
+                    ) {
+                        new_links.push(link);
+                    }
+                }
+                continue;
+            }
+
             let matched_entities: Vec<(String, String)> = match extracted_ref.ref_type.as_str() {
                 "code_symbol" => {
                     db::find_entities_by_title(&conn, &extracted_ref.text, &profile_id)
@@ -270,6 +316,51 @@ pub fn entity_links_with_details(
 ) -> Result<Vec<db::LinkWithEntity>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     db::list_entity_links_with_details(&conn, &entity_id).map_err(|e| e.to_string())
+}
+
+// ─── Terminal Task Extraction ────────────────────────────────────────
+
+#[tauri::command]
+pub async fn extract_tasks_from_terminal(
+    output: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<db::TaskRow>, String> {
+    let (profile_id, sidecar_url) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let pid = db::get_active_profile_id(&conn)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| "default".to_string());
+        (pid, state.sidecar_url.clone())
+    };
+
+    let terminal_tasks = ingest::extract_terminal_tasks(&output, &sidecar_url)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut created = Vec::new();
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        for tt in &terminal_tasks {
+            if db::find_task_by_title(&conn, &tt.text, &profile_id)
+                .unwrap_or(None)
+                .is_some()
+            {
+                continue;
+            }
+            if let Ok(task) = db::create_task(
+                &conn,
+                &tt.text,
+                Some(&tt.source_text),
+                "medium",
+                &profile_id,
+                Some("terminal"),
+            ) {
+                created.push(task);
+            }
+        }
+    }
+
+    Ok(created)
 }
 
 // ─── Entity Search command ───────────────────────────────────────────

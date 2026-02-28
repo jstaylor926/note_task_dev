@@ -23,6 +23,7 @@ pub struct TaskRow {
     pub due_date: Option<String>,
     pub assigned_to: Option<String>,
     pub completed_at: Option<String>,
+    pub source_type: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -481,17 +482,18 @@ pub fn delete_note(conn: &Connection, id: &str) -> Result<bool> {
 // ─── Task CRUD ───────────────────────────────────────────────────────
 
 /// Create a new task (inserts into both entities and tasks tables). Returns the created TaskRow.
-pub fn create_task(conn: &Connection, title: &str, content: Option<&str>, priority: &str, profile_id: &str) -> Result<TaskRow> {
+pub fn create_task(conn: &Connection, title: &str, content: Option<&str>, priority: &str, profile_id: &str, source_type: Option<&str>) -> Result<TaskRow> {
     let id = Uuid::new_v4().to_string();
+    let st = source_type.unwrap_or("manual");
     conn.execute(
         "INSERT INTO entities (id, entity_type, title, content, workspace_profile_id)
          VALUES (?1, 'task', ?2, ?3, ?4)",
         params![id, title, content, profile_id],
     )?;
     conn.execute(
-        "INSERT INTO tasks (entity_id, status, priority, workspace_profile_id)
-         VALUES (?1, 'todo', ?2, ?3)",
-        params![id, priority, profile_id],
+        "INSERT INTO tasks (entity_id, status, priority, workspace_profile_id, source_type)
+         VALUES (?1, 'todo', ?2, ?3, ?4)",
+        params![id, priority, profile_id, st],
     )?;
     get_task(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
 }
@@ -500,7 +502,7 @@ pub fn create_task(conn: &Connection, title: &str, content: Option<&str>, priori
 pub fn get_task(conn: &Connection, id: &str) -> Result<Option<TaskRow>> {
     let mut stmt = conn.prepare(
         "SELECT e.id, e.title, e.content, t.status, t.priority, t.due_date,
-                t.assigned_to, t.completed_at, e.created_at, e.updated_at
+                t.assigned_to, t.completed_at, t.source_type, e.created_at, e.updated_at
          FROM entities e JOIN tasks t ON e.id = t.entity_id
          WHERE e.id = ?1 AND e.entity_type = 'task'"
     )?;
@@ -515,8 +517,9 @@ pub fn get_task(conn: &Connection, id: &str) -> Result<Option<TaskRow>> {
             due_date: row.get(5)?,
             assigned_to: row.get(6)?,
             completed_at: row.get(7)?,
-            created_at: row.get(8)?,
-            updated_at: row.get(9)?,
+            source_type: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
         })),
         None => Ok(None),
     }
@@ -534,15 +537,16 @@ pub fn list_tasks(conn: &Connection, profile_id: &str, status_filter: Option<&st
             due_date: row.get(5)?,
             assigned_to: row.get(6)?,
             completed_at: row.get(7)?,
-            created_at: row.get(8)?,
-            updated_at: row.get(9)?,
+            source_type: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
         })
     }
 
     if let Some(status) = status_filter {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.title, e.content, t.status, t.priority, t.due_date,
-                    t.assigned_to, t.completed_at, e.created_at, e.updated_at
+                    t.assigned_to, t.completed_at, t.source_type, e.created_at, e.updated_at
              FROM entities e JOIN tasks t ON e.id = t.entity_id
              WHERE e.entity_type = 'task' AND e.workspace_profile_id = ?1 AND t.status = ?2
              ORDER BY CASE t.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, e.created_at DESC"
@@ -552,7 +556,7 @@ pub fn list_tasks(conn: &Connection, profile_id: &str, status_filter: Option<&st
     } else {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.title, e.content, t.status, t.priority, t.due_date,
-                    t.assigned_to, t.completed_at, e.created_at, e.updated_at
+                    t.assigned_to, t.completed_at, t.source_type, e.created_at, e.updated_at
              FROM entities e JOIN tasks t ON e.id = t.entity_id
              WHERE e.entity_type = 'task' AND e.workspace_profile_id = ?1
              ORDER BY CASE t.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, e.created_at DESC"
@@ -609,6 +613,33 @@ pub fn delete_task(conn: &Connection, id: &str) -> Result<bool> {
         params![id],
     )?;
     Ok(deleted > 0)
+}
+
+/// Check if a task with this exact title already exists (for auto-extraction dedup).
+pub fn find_task_by_title(conn: &Connection, title: &str, profile_id: &str) -> Result<Option<TaskRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.id, e.title, e.content, t.status, t.priority, t.due_date,
+                t.assigned_to, t.completed_at, t.source_type, e.created_at, e.updated_at
+         FROM entities e JOIN tasks t ON e.id = t.entity_id
+         WHERE e.entity_type = 'task' AND e.title = ?1 AND e.workspace_profile_id = ?2"
+    )?;
+    let mut rows = stmt.query(params![title, profile_id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(TaskRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            content: row.get(2)?,
+            status: row.get(3)?,
+            priority: row.get(4)?,
+            due_date: row.get(5)?,
+            assigned_to: row.get(6)?,
+            completed_at: row.get(7)?,
+            source_type: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
+        })),
+        None => Ok(None),
+    }
 }
 
 // ─── Entity Links ────────────────────────────────────────────────────
@@ -1086,19 +1117,34 @@ mod tests {
     fn test_create_task_returns_valid_row() {
         let conn = initialize(Path::new(":memory:")).unwrap();
         let pid = get_active_profile_id(&conn).unwrap().unwrap();
-        let task = create_task(&conn, "My Task", Some("details"), "high", &pid).unwrap();
+        let task = create_task(&conn, "My Task", Some("details"), "high", &pid, None).unwrap();
         assert!(!task.id.is_empty());
         assert_eq!(task.title, "My Task");
         assert_eq!(task.status, "todo");
         assert_eq!(task.priority, "high");
         assert!(task.completed_at.is_none());
+        assert_eq!(task.source_type.as_deref(), Some("manual"));
+    }
+
+    #[test]
+    fn test_create_task_with_source_type() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        let task = create_task(&conn, "Auto Task", None, "low", &pid, Some("note")).unwrap();
+        assert_eq!(task.source_type.as_deref(), Some("note"));
+
+        let task2 = create_task(&conn, "Code Task", None, "medium", &pid, Some("code_comment")).unwrap();
+        assert_eq!(task2.source_type.as_deref(), Some("code_comment"));
+
+        let task3 = create_task(&conn, "Term Task", None, "high", &pid, Some("terminal")).unwrap();
+        assert_eq!(task3.source_type.as_deref(), Some("terminal"));
     }
 
     #[test]
     fn test_get_task_by_id() {
         let conn = initialize(Path::new(":memory:")).unwrap();
         let pid = get_active_profile_id(&conn).unwrap().unwrap();
-        let task = create_task(&conn, "Fetch Me", None, "medium", &pid).unwrap();
+        let task = create_task(&conn, "Fetch Me", None, "medium", &pid, None).unwrap();
         let fetched = get_task(&conn, &task.id).unwrap().unwrap();
         assert_eq!(fetched.id, task.id);
         assert_eq!(fetched.title, "Fetch Me");
@@ -1114,8 +1160,8 @@ mod tests {
     fn test_list_tasks_all() {
         let conn = initialize(Path::new(":memory:")).unwrap();
         let pid = get_active_profile_id(&conn).unwrap().unwrap();
-        create_task(&conn, "A", None, "low", &pid).unwrap();
-        create_task(&conn, "B", None, "high", &pid).unwrap();
+        create_task(&conn, "A", None, "low", &pid, None).unwrap();
+        create_task(&conn, "B", None, "high", &pid, None).unwrap();
         let tasks = list_tasks(&conn, &pid, None).unwrap();
         assert_eq!(tasks.len(), 2);
         // High priority should come first
@@ -1123,11 +1169,25 @@ mod tests {
     }
 
     #[test]
+    fn test_list_tasks_source_type_preserved() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        create_task(&conn, "Manual", None, "medium", &pid, None).unwrap();
+        create_task(&conn, "From Note", None, "medium", &pid, Some("note")).unwrap();
+        let tasks = list_tasks(&conn, &pid, None).unwrap();
+        assert_eq!(tasks.len(), 2);
+        let manual = tasks.iter().find(|t| t.title == "Manual").unwrap();
+        assert_eq!(manual.source_type.as_deref(), Some("manual"));
+        let note = tasks.iter().find(|t| t.title == "From Note").unwrap();
+        assert_eq!(note.source_type.as_deref(), Some("note"));
+    }
+
+    #[test]
     fn test_list_tasks_with_status_filter() {
         let conn = initialize(Path::new(":memory:")).unwrap();
         let pid = get_active_profile_id(&conn).unwrap().unwrap();
-        let t = create_task(&conn, "A", None, "medium", &pid).unwrap();
-        create_task(&conn, "B", None, "medium", &pid).unwrap();
+        let t = create_task(&conn, "A", None, "medium", &pid, None).unwrap();
+        create_task(&conn, "B", None, "medium", &pid, None).unwrap();
         update_task(&conn, &t.id, "A", None, "done", "medium", None, None).unwrap();
 
         let done = list_tasks(&conn, &pid, Some("done")).unwrap();
@@ -1143,7 +1203,7 @@ mod tests {
     fn test_update_task_sets_completed_at_on_done() {
         let conn = initialize(Path::new(":memory:")).unwrap();
         let pid = get_active_profile_id(&conn).unwrap().unwrap();
-        let task = create_task(&conn, "Complete Me", None, "medium", &pid).unwrap();
+        let task = create_task(&conn, "Complete Me", None, "medium", &pid, None).unwrap();
         assert!(task.completed_at.is_none());
 
         update_task(&conn, &task.id, "Complete Me", None, "done", "medium", None, None).unwrap();
@@ -1156,7 +1216,7 @@ mod tests {
     fn test_update_task_clears_completed_at_on_undone() {
         let conn = initialize(Path::new(":memory:")).unwrap();
         let pid = get_active_profile_id(&conn).unwrap().unwrap();
-        let task = create_task(&conn, "T", None, "medium", &pid).unwrap();
+        let task = create_task(&conn, "T", None, "medium", &pid, None).unwrap();
         update_task(&conn, &task.id, "T", None, "done", "medium", None, None).unwrap();
         update_task(&conn, &task.id, "T", None, "todo", "medium", None, None).unwrap();
         let t = get_task(&conn, &task.id).unwrap().unwrap();
@@ -1175,9 +1235,28 @@ mod tests {
     fn test_delete_task() {
         let conn = initialize(Path::new(":memory:")).unwrap();
         let pid = get_active_profile_id(&conn).unwrap().unwrap();
-        let task = create_task(&conn, "Bye", None, "low", &pid).unwrap();
+        let task = create_task(&conn, "Bye", None, "low", &pid, None).unwrap();
         assert!(delete_task(&conn, &task.id).unwrap());
         assert!(get_task(&conn, &task.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_find_task_by_title_match() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        create_task(&conn, "Fix login bug", None, "high", &pid, Some("note")).unwrap();
+        let found = find_task_by_title(&conn, "Fix login bug", &pid).unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().title, "Fix login bug");
+    }
+
+    #[test]
+    fn test_find_task_by_title_miss() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+        create_task(&conn, "Other task", None, "low", &pid, None).unwrap();
+        let found = find_task_by_title(&conn, "Nonexistent task", &pid).unwrap();
+        assert!(found.is_none());
     }
 
     // ─── Entity Link tests ──────────────────────────────────────────
@@ -1276,7 +1355,7 @@ mod tests {
         let conn = initialize(Path::new(":memory:")).unwrap();
         let pid = get_active_profile_id(&conn).unwrap().unwrap();
         create_note(&conn, "Search Note", "content", &pid).unwrap();
-        create_task(&conn, "Search Task", Some("content"), "medium", &pid).unwrap();
+        create_task(&conn, "Search Task", Some("content"), "medium", &pid, None).unwrap();
 
         let notes = search_entities(&conn, "Search", Some("note"), &pid, 10).unwrap();
         assert_eq!(notes.len(), 1);
@@ -1314,7 +1393,7 @@ mod tests {
         let conn = initialize(Path::new(":memory:")).unwrap();
         let pid = get_active_profile_id(&conn).unwrap().unwrap();
         create_note(&conn, "NoteA", "a", &pid).unwrap();
-        create_task(&conn, "TaskB", None, "medium", &pid).unwrap();
+        create_task(&conn, "TaskB", None, "medium", &pid, None).unwrap();
         let titles = list_entity_titles(&conn, &pid).unwrap();
         assert_eq!(titles.len(), 2);
         let names: Vec<&str> = titles.iter().map(|(_, t, _)| t.as_str()).collect();

@@ -1,7 +1,12 @@
 """Tests for reference extraction module."""
 
 import pytest
-from cortex_sidecar.reference_extraction import extract_references, ExtractedReference
+from cortex_sidecar.reference_extraction import (
+    extract_references,
+    ExtractedReference,
+    extract_code_todos,
+    CodeTodo,
+)
 
 
 class TestURLExtraction:
@@ -167,3 +172,63 @@ class TestMixedContent:
         symbols = [r for r in refs if r.ref_type == "code_symbol"]
         assert len(symbols) == 1
         assert text[symbols[0].start : symbols[0].end] == "`myFunc`"
+
+
+class TestCodeTodoExtraction:
+    def test_rust_double_slash_todo(self):
+        source = '// TODO: refactor this function\nfn main() {}'
+        todos = extract_code_todos(source)
+        assert len(todos) == 1
+        assert todos[0].text == "refactor this function"
+        assert todos[0].marker == "TODO"
+        assert todos[0].line_number == 1
+        assert todos[0].confidence == 1.0
+
+    def test_python_hash_fixme(self):
+        source = '# FIXME: handle edge case\ndef foo():\n    pass'
+        todos = extract_code_todos(source)
+        assert len(todos) == 1
+        assert todos[0].text == "handle edge case"
+        assert todos[0].marker == "FIXME"
+        assert todos[0].line_number == 1
+
+    def test_multiple_todos(self):
+        source = (
+            "fn main() {\n"
+            "    // TODO: add error handling\n"
+            "    let x = 1;\n"
+            "    // HACK: workaround for bug\n"
+            "}\n"
+        )
+        todos = extract_code_todos(source)
+        assert len(todos) == 2
+        assert todos[0].marker == "TODO"
+        assert todos[0].line_number == 2
+        assert todos[1].marker == "HACK"
+        assert todos[1].line_number == 4
+
+    def test_case_insensitive(self):
+        source = "# todo: lower case todo\n# Fixme: mixed case"
+        todos = extract_code_todos(source)
+        assert len(todos) == 2
+        assert todos[0].marker == "TODO"
+        assert todos[1].marker == "FIXME"
+
+    def test_no_false_positives_on_todoist(self):
+        source = "// Using todoist API for task management\nlet client = todoist.new();"
+        todos = extract_code_todos(source)
+        # "todoist" should not match — the pattern requires a separator after the marker
+        assert len(todos) == 0
+
+    def test_block_comment_todo(self):
+        source = "/* TODO: implement caching */\nfn cache() {}"
+        todos = extract_code_todos(source)
+        assert len(todos) == 1
+        assert todos[0].text == "implement caching */"
+        # The */ is captured since regex takes rest of line; this is acceptable
+
+    def test_empty_todo_text_skipped(self):
+        source = "// TODO:\n// FIXME: real issue"
+        todos = extract_code_todos(source)
+        assert len(todos) == 1
+        assert todos[0].marker == "FIXME"

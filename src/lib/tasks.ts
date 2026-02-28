@@ -9,12 +9,13 @@ export interface TaskRow {
   due_date: string | null;
   assigned_to: string | null;
   completed_at: string | null;
+  source_type: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export async function taskCreate(title: string, content: string | null, priority: string): Promise<TaskRow> {
-  return invoke<TaskRow>('task_create', { title, content, priority });
+export async function taskCreate(title: string, content: string | null, priority: string, sourceType?: string): Promise<TaskRow> {
+  return invoke<TaskRow>('task_create', { title, content, priority, sourceType: sourceType ?? null });
 }
 
 export async function taskGet(id: string): Promise<TaskRow | null> {
@@ -47,4 +48,8 @@ export async function taskUpdate(
 
 export async function taskDelete(id: string): Promise<boolean> {
   return invoke<boolean>('task_delete', { id });
+}
+
+export async function extractTasksFromTerminal(output: string): Promise<TaskRow[]> {
+  return invoke<TaskRow[]>('extract_tasks_from_terminal', { output });
 }

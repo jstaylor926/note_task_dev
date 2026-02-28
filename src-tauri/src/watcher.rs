@@ -203,6 +203,34 @@ fn process_file_with_events(app_handle: AppHandle, path: PathBuf) {
                     }
                 }
 
+                // 5b. Extract TODOs from code comments and create tasks
+                if let Ok(todos) = ingest::extract_code_todos(&content, &file_path_str, &sidecar_url).await {
+                    if !todos.is_empty() {
+                        let conn = state.db.lock().unwrap();
+                        if let Ok(Some(profile_id)) = db::get_active_profile_id(&conn) {
+                            for todo in &todos {
+                                if db::find_task_by_title(&conn, &todo.text, &profile_id)
+                                    .unwrap_or(None)
+                                    .is_none()
+                                {
+                                    let task_content = format!(
+                                        "{}:{} — {}",
+                                        file_path_str, todo.line_number, todo.marker
+                                    );
+                                    let _ = db::create_task(
+                                        &conn,
+                                        &todo.text,
+                                        Some(&task_content),
+                                        "low",
+                                        &profile_id,
+                                        Some("code_comment"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let chunk_count = resp.chunk_count;
                 let mut indexing = state.indexing.lock().unwrap();
                 indexing.completed += 1;

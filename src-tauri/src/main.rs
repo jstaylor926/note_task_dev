@@ -239,6 +239,7 @@ fn main() {
             entity_commands::note_auto_link,
             entity_commands::entity_link_confirm,
             entity_commands::entity_links_with_details,
+            entity_commands::extract_tasks_from_terminal,
             entity_commands::entity_search,
         ])
         .build(tauri::generate_context!())

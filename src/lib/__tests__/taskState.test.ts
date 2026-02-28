@@ -18,7 +18,7 @@ beforeEach(() => {
 });
 
 function makeTask(overrides: Partial<{
-  id: string; title: string; status: string; priority: string;
+  id: string; title: string; status: string; priority: string; source_type: string | null;
 }> = {}) {
   return {
     id: 't1',
@@ -29,6 +29,7 @@ function makeTask(overrides: Partial<{
     due_date: null,
     assigned_to: null,
     completed_at: null,
+    source_type: null,
     created_at: '',
     updated_at: '',
     ...overrides,
@@ -159,6 +160,115 @@ describe('taskState', () => {
 
       store.setFilter('all');
       expect(store.filteredTasks().length).toBe(3);
+      dispose();
+    });
+  });
+
+  // ─── New Phase 5c tests ──────────────────────────────────────────
+
+  it('sortedTasks sorts by priority', async () => {
+    const tasks = [
+      makeTask({ id: 't1', priority: 'low' }),
+      makeTask({ id: 't2', priority: 'high' }),
+      makeTask({ id: 't3', priority: 'medium' }),
+    ];
+    mockTaskList.mockResolvedValue(tasks);
+    const { createTaskStore } = await import('../taskState');
+
+    await createRoot(async (dispose) => {
+      const store = createTaskStore();
+      await store.loadTasks();
+      store.setSortBy('priority');
+      const sorted = store.sortedTasks();
+      expect(sorted[0].priority).toBe('high');
+      expect(sorted[1].priority).toBe('medium');
+      expect(sorted[2].priority).toBe('low');
+      dispose();
+    });
+  });
+
+  it('groupedTasks groups by status', async () => {
+    const tasks = [
+      makeTask({ id: 't1', status: 'todo' }),
+      makeTask({ id: 't2', status: 'done' }),
+      makeTask({ id: 't3', status: 'todo' }),
+    ];
+    mockTaskList.mockResolvedValue(tasks);
+    const { createTaskStore } = await import('../taskState');
+
+    await createRoot(async (dispose) => {
+      const store = createTaskStore();
+      await store.loadTasks();
+      store.setGroupBy('status');
+      const groups = store.groupedTasks();
+      expect(groups.get('todo')?.length).toBe(2);
+      expect(groups.get('done')?.length).toBe(1);
+      dispose();
+    });
+  });
+
+  it('kanbanColumns returns correct structure', async () => {
+    const tasks = [
+      makeTask({ id: 't1', status: 'todo' }),
+      makeTask({ id: 't2', status: 'in_progress' }),
+      makeTask({ id: 't3', status: 'done' }),
+      makeTask({ id: 't4', status: 'todo' }),
+    ];
+    mockTaskList.mockResolvedValue(tasks);
+    const { createTaskStore } = await import('../taskState');
+
+    await createRoot(async (dispose) => {
+      const store = createTaskStore();
+      await store.loadTasks();
+      const cols = store.kanbanColumns();
+      expect(cols.todo.length).toBe(2);
+      expect(cols.in_progress.length).toBe(1);
+      expect(cols.done.length).toBe(1);
+      dispose();
+    });
+  });
+
+  it('setViewMode, setSortBy, setGroupBy update state', async () => {
+    const { createTaskStore } = await import('../taskState');
+    createRoot((dispose) => {
+      const store = createTaskStore();
+      expect(store.state.viewMode).toBe('list');
+      store.setViewMode('kanban');
+      expect(store.state.viewMode).toBe('kanban');
+
+      expect(store.state.sortBy).toBe('created');
+      store.setSortBy('priority');
+      expect(store.state.sortBy).toBe('priority');
+
+      expect(store.state.groupBy).toBe('none');
+      store.setGroupBy('status');
+      expect(store.state.groupBy).toBe('status');
+      dispose();
+    });
+  });
+
+  it('source_type preserved in task operations', async () => {
+    const task = makeTask({ id: 't1', source_type: 'note' });
+    mockTaskList.mockResolvedValue([task]);
+    const { createTaskStore } = await import('../taskState');
+
+    await createRoot(async (dispose) => {
+      const store = createTaskStore();
+      await store.loadTasks();
+      expect(store.state.tasks[0].source_type).toBe('note');
+      dispose();
+    });
+  });
+
+  it('setEditingTask toggles editing mode', async () => {
+    const { createTaskStore } = await import('../taskState');
+    createRoot((dispose) => {
+      const store = createTaskStore();
+      expect(store.state.editingTaskId).toBeNull();
+      store.setEditingTask('t1');
+      expect(store.state.editingTaskId).toBe('t1');
+      store.setEditingTask(null);
+      expect(store.state.editingTaskId).toBeNull();
       dispose();
     });
   });

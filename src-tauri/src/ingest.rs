@@ -212,6 +212,90 @@ pub async fn extract_references(
     Ok(result)
 }
 
+// ─── Code TODO + Terminal Task Extraction ────────────────────────────
+
+#[derive(Deserialize, Debug)]
+pub struct CodeTodo {
+    pub text: String,
+    pub marker: String,
+    pub line_number: usize,
+    pub confidence: f64,
+}
+
+#[derive(Deserialize, Debug)]
+struct CodeTodoResponse {
+    todos: Vec<CodeTodo>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct TerminalTask {
+    pub text: String,
+    pub error_type: String,
+    pub source_text: String,
+    pub confidence: f64,
+}
+
+#[derive(Deserialize, Debug)]
+struct TerminalTaskResponse {
+    tasks: Vec<TerminalTask>,
+}
+
+/// Call sidecar /extract-code-todos endpoint.
+pub async fn extract_code_todos(
+    source: &str,
+    file_path: &str,
+    sidecar_url: &str,
+) -> anyhow::Result<Vec<CodeTodo>> {
+    #[derive(Serialize)]
+    struct Req<'a> {
+        source: &'a str,
+        file_path: &'a str,
+    }
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/extract-code-todos", sidecar_url);
+    let res = client
+        .post(url)
+        .json(&Req { source, file_path })
+        .send()
+        .await?;
+
+    if !res.status().is_success() {
+        let err = res.text().await?;
+        anyhow::bail!("Sidecar extract-code-todos error: {}", err);
+    }
+
+    let resp = res.json::<CodeTodoResponse>().await?;
+    Ok(resp.todos)
+}
+
+/// Call sidecar /extract-terminal-tasks endpoint.
+pub async fn extract_terminal_tasks(
+    output: &str,
+    sidecar_url: &str,
+) -> anyhow::Result<Vec<TerminalTask>> {
+    #[derive(Serialize)]
+    struct Req<'a> {
+        output: &'a str,
+    }
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/extract-terminal-tasks", sidecar_url);
+    let res = client
+        .post(url)
+        .json(&Req { output })
+        .send()
+        .await?;
+
+    if !res.status().is_success() {
+        let err = res.text().await?;
+        anyhow::bail!("Sidecar extract-terminal-tasks error: {}", err);
+    }
+
+    let resp = res.json::<TerminalTaskResponse>().await?;
+    Ok(resp.tasks)
+}
+
 /// Embed a note's content into LanceDB via sidecar /embed endpoint.
 pub async fn embed_note(
     note_id: &str,

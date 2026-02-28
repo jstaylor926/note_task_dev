@@ -143,3 +143,50 @@ def extract_references(
 
     refs.sort(key=lambda r: r.start)
     return refs
+
+
+# ─── Code Comment TODO Extraction ────────────────────────────────────
+
+
+@dataclass
+class CodeTodo:
+    text: str           # The TODO/FIXME text after the marker
+    marker: str         # "TODO", "FIXME", "HACK", "XXX"
+    line_number: int    # 1-indexed line number in the file
+    confidence: float   # 1.0 for explicit markers
+
+
+CODE_COMMENT_TODO_RE = re.compile(
+    r"(?://|#|/\*|--|%)\s*(?P<marker>TODO|FIXME|HACK|XXX)[: \t]+(?P<text>[^\n]*)",
+    re.IGNORECASE,
+)
+
+
+def extract_code_todos(source: str) -> list[CodeTodo]:
+    """Extract TODO/FIXME comments from source code.
+
+    Matches common comment prefixes (//, #, /*, --, %) followed by
+    TODO, FIXME, HACK, or XXX markers.
+
+    Args:
+        source: The source code text to scan.
+
+    Returns:
+        List of CodeTodo objects found in the source.
+    """
+    todos: list[CodeTodo] = []
+    for m in CODE_COMMENT_TODO_RE.finditer(source):
+        text = m.group("text").strip()
+        if not text:
+            continue
+        # Compute 1-indexed line number
+        line_number = source[:m.start()].count("\n") + 1
+        todos.append(
+            CodeTodo(
+                text=text,
+                marker=m.group("marker").upper(),
+                line_number=line_number,
+                confidence=1.0,
+            )
+        )
+    return todos

@@ -92,6 +92,13 @@ class ExtractReferencesRequest(BaseModel):
     text: str
     known_symbols: List[str] = []
 
+class ExtractCodeTodosRequest(BaseModel):
+    source: str
+    file_path: str = ""
+
+class ExtractTerminalTasksRequest(BaseModel):
+    output: str
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize LanceDB and Embedding model on startup.
@@ -360,6 +367,40 @@ async def extract_references_endpoint(req: ExtractReferencesRequest):
 
     refs = extract_references(req.text, req.known_symbols)
     return {"references": [asdict(r) for r in refs]}
+
+
+@app.post("/extract-code-todos")
+async def extract_code_todos_endpoint(req: ExtractCodeTodosRequest):
+    """Extract TODO/FIXME comments from source code.
+
+    Args:
+        req: The ExtractCodeTodosRequest containing source code and optional file path.
+
+    Returns:
+        A dictionary with a list of extracted code TODOs.
+    """
+    from dataclasses import asdict
+    from cortex_sidecar.reference_extraction import extract_code_todos
+
+    todos = extract_code_todos(req.source)
+    return {"todos": [asdict(t) for t in todos]}
+
+
+@app.post("/extract-terminal-tasks")
+async def extract_terminal_tasks_endpoint(req: ExtractTerminalTasksRequest):
+    """Extract actionable tasks from terminal error output.
+
+    Args:
+        req: The ExtractTerminalTasksRequest containing terminal output.
+
+    Returns:
+        A dictionary with a list of extracted terminal tasks.
+    """
+    from dataclasses import asdict
+    from cortex_sidecar.terminal_extraction import extract_terminal_tasks
+
+    tasks = extract_terminal_tasks(req.output)
+    return {"tasks": [asdict(t) for t in tasks]}
 
 
 def main():
