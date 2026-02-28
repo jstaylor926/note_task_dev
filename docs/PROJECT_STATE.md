@@ -1,6 +1,6 @@
 # Cortex: Complete Project State Document
 
-> **Generated:** 2026-02-27
+> **Generated:** 2026-02-28 (updated)
 > **Purpose:** Comprehensive reference for any AI agent or developer working on this project. Covers architecture, implementation status, known bugs, conventions, and the full roadmap.
 
 ---
@@ -251,7 +251,7 @@ pub struct IndexingState {
 6. Write shell hook scripts to `{data_dir}/shell_hooks/`
 7. Construct AppState
 8. Spawn background tasks: `health_monitor_loop` + `start_watcher`
-9. Register 8 Tauri IPC commands
+9. Register 22 Tauri IPC commands
 10. On `RunEvent::Exit`: stop sidecar + kill all PTY sessions
 
 ### 5.4 File Ingestion Pipeline (watcher.rs + ingest.rs)
@@ -279,6 +279,10 @@ File change detected (notify crate)
     Response: { chunk_count, entities: [{name, type, start_line, end_line}] }
          |
     Rust: upsert_file_index + upsert_entity for each extracted entity
+         |
+    POST /extract-code-todos to sidecar (source code content)
+         |
+    For each TODO: dedup by title -> create_task(source_type="code_comment")
          |
     Emit: indexing:file-complete + indexing:progress events
 ```
@@ -328,6 +332,20 @@ pty_create Tauri command
 | `pty_write` | `pty_commands::pty_write` | yes | Writes base64-decoded data to PTY |
 | `pty_resize` | `pty_commands::pty_resize` | yes | Resizes PTY dimensions |
 | `pty_kill` | `pty_commands::pty_kill` | yes | Kills PTY session and reader thread |
+| `note_create` | `entity_commands::note_create` | no | Creates a note entity in SQLite |
+| `note_update` | `entity_commands::note_update` | no | Updates note title/content |
+| `note_get` | `entity_commands::note_get` | no | Retrieves a single note |
+| `note_list` | `entity_commands::note_list` | no | Lists all notes for active profile |
+| `note_delete` | `entity_commands::note_delete` | no | Deletes a note entity |
+| `note_auto_link` | `entity_commands::note_auto_link` | no | Extracts references from note content, auto-creates entity links and tasks |
+| `task_create` | `entity_commands::task_create` | no | Creates a task with optional `source_type` (manual/note/code_comment/terminal) |
+| `task_get` | `entity_commands::task_get` | no | Retrieves a single task |
+| `task_list` | `entity_commands::task_list` | no | Lists tasks with optional status filter |
+| `task_update` | `entity_commands::task_update` | no | Updates task fields (title, content, status, priority, due_date, assigned_to) |
+| `task_delete` | `entity_commands::task_delete` | no | Deletes a task entity |
+| `extract_tasks_from_terminal` | `entity_commands::extract_tasks_from_terminal` | yes | Extracts actionable tasks from terminal error output via sidecar |
+| `file_read` | `entity_commands::file_read` | no | Reads file content from disk |
+| `file_write` | `entity_commands::file_write` | no | Writes content to disk (for editor) |
 
 ---
 
@@ -346,6 +364,9 @@ FastAPI app running on `127.0.0.1:9400`. Handles all ML workloads: text chunking
 | `POST` | `/embed` | Embeds a single text snippet. Body: `{text, metadata}`. Returns: `{status, entity_id}` |
 | `DELETE` | `/embeddings?source_file=X` | Deletes all embeddings for a file |
 | `GET` | `/search?query=X&limit=N&language=&source_type=&chunk_type=&file_path_prefix=` | Vector similarity search. Returns: `{results, query}` |
+| `POST` | `/extract-references` | Extracts URLs, file paths, action items, and code symbols from text. Body: `{text, known_symbols?}`. Returns: `{references}` |
+| `POST` | `/extract-code-todos` | Extracts TODO/FIXME comments from source code. Body: `{source, file_path?}`. Returns: `{todos}` |
+| `POST` | `/extract-terminal-tasks` | Extracts actionable tasks from terminal error output. Body: `{output}`. Returns: `{tasks}` |
 
 ### 6.3 Chunking Strategies (chunking.py)
 
@@ -426,11 +447,25 @@ App.tsx
         +-- Header (h-10): "Cortex" + IndexingStatus
         |
         +-- Left sidebar (col 1, row-span-2):
-        |   +-- NotesPanel (flex-1) [STUB]
-        |   +-- TaskPanel (h-[200px]) [STUB]
+        |   +-- NotesPanel (flex-1) [FUNCTIONAL]
+        |   |   +-- Note list with create/delete
+        |   |   +-- CodeMirror 6 markdown editor with auto-save
+        |   |   +-- Auto-linking on save (references, action items → tasks)
+        |   +-- TaskPanel (h-[200px]) [FUNCTIONAL]
+        |       +-- View mode toggle (List | Board)
+        |       +-- Filter pills (All, Todo, In Progress, Done)
+        |       +-- Sort dropdown (Created, Priority, Due Date, Status)
+        |       +-- Group dropdown (None, Status, Priority, Source)
+        |       +-- List view with optional group headers
+        |       +-- Kanban board view (3 columns: Todo, In Progress, Done)
+        |       +-- Inline edit form (title, status, priority)
+        |       +-- Source type badges (N=note, C=code_comment, T=terminal)
+        |       +-- Inline task creation
         |
         +-- Center top (col 2, row 1):
-        |   +-- EditorPanel [STUB]
+        |   +-- EditorPanel [FUNCTIONAL]
+        |       +-- CodeMirror 6 with language detection
+        |       +-- File read/write via Tauri IPC
         |
         +-- Center bottom (col 2, row 2):
         |   +-- TerminalPanel
@@ -448,17 +483,26 @@ App.tsx
 
 ### 7.3 State Management
 
-- **No global store** -- each component manages its own state via SolidJS `createSignal`
 - **Terminal state:** `createTerminalStore()` in `terminalState.ts` uses `createStore` + `produce` (immer-style mutations). Instantiated locally in `TerminalPanel`, not provided via context.
-- **Terminal state shape:**
   ```typescript
   type PaneNode =
     | { type: 'pane'; id: string; sessionId: string }
     | { type: 'split'; id: string; direction: 'horizontal'|'vertical'; children: PaneNode[]; sizes: number[] }
-
   type TerminalTab = { id: string; title: string; layout: PaneNode }
   type TerminalState = { tabs: TerminalTab[]; activeTabIndex: number; activePaneId: string | null }
   ```
+- **Task state:** `createTaskStore()` in `taskState.ts` uses `createStore` + `produce`. Instantiated as singleton in `taskStoreInstance.ts`.
+  ```typescript
+  type TaskViewMode = 'list' | 'kanban';
+  type TaskSortBy = 'created' | 'priority' | 'due_date' | 'status';
+  type TaskGroupBy = 'none' | 'status' | 'priority' | 'source_type';
+  interface TaskState {
+    tasks: TaskRow[]; filter: TaskFilter; isLoading: boolean; error: string | null;
+    viewMode: TaskViewMode; sortBy: TaskSortBy; groupBy: TaskGroupBy; editingTaskId: string | null;
+  }
+  ```
+  Computed memos: `filteredTasks()`, `sortedTasks()`, `groupedTasks()`, `kanbanColumns()`
+- **Notes state:** `createNotesStore()` in `notesState.ts` — note list, active note, loading/error state. Instantiated as singleton in `notesStoreInstance.ts`.
 
 ### 7.4 Keyboard Shortcuts (Global)
 
@@ -507,12 +551,12 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 | `schema_version` | Implemented | Migration tracking (currently version 1) |
 | `workspace_profiles` | Implemented | Named workspaces with watched dirs, LLM settings |
 | `file_index` | Implemented | Per-file indexing state: hash, chunk_count, language, file_size |
-| `entities` | Implemented | Extracted code symbols (functions, classes, structs) |
+| `entities` | Implemented | Extracted code symbols, notes, tasks (functions, classes, structs, notes, tasks) |
+| `entity_links` | Implemented | Relationships between entities with confidence scores and auto_generated flag |
+| `tasks` | Implemented | Task entities with status/priority/source_type (full CRUD + dedup via find_task_by_title) |
 | `terminal_commands` | Schema + write fn exists | Shell command history (write fn exists but never called from non-test code) |
 | `app_config` | Schema only | Key-value config store (no CRUD functions) |
 | `session_states` | Schema only | Periodic session snapshots (no CRUD functions) |
-| `entity_links` | Schema only | Relationships between entities (no CRUD functions) |
-| `tasks` | Schema only | Task entities with status/priority (no CRUD functions) |
 | `chat_messages` | Schema only | LLM conversation history (no CRUD functions) |
 | `git_events` | Schema only | Git hook events (no CRUD functions) |
 
@@ -533,6 +577,24 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 | `delete_entities_by_source_file(conn, source)` | Bulk delete all entities for a file |
 | `delete_file_index(conn, path, profile_id)` | Remove file from index |
 | `insert_terminal_command(conn, profile_id, cmd, cwd, exit_code, duration)` | Insert command record (DEAD CODE -- never called outside tests) |
+| **Note functions** | |
+| `create_note(conn, title, content, profile_id)` | Create a note entity |
+| `get_note(conn, id)` | Retrieve a note by ID |
+| `list_notes(conn, profile_id)` | List all notes for a profile |
+| `update_note(conn, id, title, content)` | Update note title/content |
+| `delete_note(conn, id)` | Delete a note entity |
+| **Task functions** | |
+| `create_task(conn, title, content, priority, profile_id, source_type)` | Create a task with source_type (manual/note/code_comment/terminal) |
+| `get_task(conn, id)` | Retrieve a task by ID |
+| `list_tasks(conn, profile_id, status_filter)` | List tasks with optional status filter |
+| `update_task(conn, id, title, content, status, priority, due_date, assigned_to)` | Update task fields |
+| `delete_task(conn, id)` | Delete a task entity |
+| `find_task_by_title(conn, title, profile_id)` | Find task by exact title (dedup for auto-extraction) |
+| **Entity link functions** | |
+| `create_entity_link(conn, source_id, target_id, relationship)` | Create a link between entities |
+| `create_entity_link_with_confidence(conn, src, tgt, rel, confidence, auto, context)` | Create a link with confidence score |
+| `get_entity_links(conn, entity_id)` | Get all links for an entity |
+| `search_entities(conn, query, profile_id, entity_type)` | Full-text search across entities |
 
 ---
 
@@ -550,6 +612,20 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 | `pty_write` | `{sessionId, data: base64}` | `()` | `XtermInstance.tsx` |
 | `pty_resize` | `{sessionId, cols, rows}` | `()` | `XtermInstance.tsx` |
 | `pty_kill` | `{sessionId}` | `()` | `XtermInstance.tsx` |
+| `note_create` | `{title, content}` | `NoteRow` | `NotesPanel.tsx` |
+| `note_update` | `{id, title, content}` | `bool` | `NotesPanel.tsx` |
+| `note_get` | `{id}` | `NoteRow` | `notesState.ts` |
+| `note_list` | none | `NoteRow[]` | `notesState.ts` |
+| `note_delete` | `{id}` | `bool` | `NotesPanel.tsx` |
+| `note_auto_link` | `{id}` | `{links_created, tasks_created}` | `notesState.ts` (on save) |
+| `task_create` | `{title, content?, priority, sourceType?}` | `TaskRow` | `TaskPanel.tsx` |
+| `task_get` | `{id}` | `TaskRow` | `taskState.ts` |
+| `task_list` | `{statusFilter?}` | `TaskRow[]` | `taskState.ts` |
+| `task_update` | `{id, title?, content?, status?, priority?, dueDate?, assignedTo?}` | `bool` | `TaskPanel.tsx` |
+| `task_delete` | `{id}` | `bool` | `TaskPanel.tsx` |
+| `extract_tasks_from_terminal` | `{output}` | `TaskRow[]` | `tasks.ts` |
+| `file_read` | `{path}` | `string` | `EditorPanel.tsx` |
+| `file_write` | `{path, content}` | `bool` | `EditorPanel.tsx` |
 
 ### 9.2 Rust -> Frontend (Tauri events)
 
@@ -572,19 +648,22 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 | `POST` | `{sidecar_url}/ingest` | `ingest.rs` (file processing) |
 | `DELETE` | `{sidecar_url}/embeddings?source_file=X` | `ingest.rs` (pre-ingest cleanup), `watcher.rs` (file deletion) |
 | `GET` | `{sidecar_url}/search?query=X&limit=N&...` | `commands.rs` (semantic_search) |
+| `POST` | `{sidecar_url}/extract-references` | `ingest.rs` (reference extraction for auto-linking) |
+| `POST` | `{sidecar_url}/extract-code-todos` | `ingest.rs` (code TODO extraction), `watcher.rs` (after file ingest) |
+| `POST` | `{sidecar_url}/extract-terminal-tasks` | `entity_commands.rs` (terminal error extraction) |
 
 ---
 
 ## 10. Test Infrastructure
 
-### 10.1 Test Counts (as of Feb 27, 2026)
+### 10.1 Test Counts (as of Feb 28, 2026)
 
 | Layer | Framework | Count | Command |
 |---|---|---|---|
-| Rust | `cargo test` | 50 | `cd src-tauri && cargo test` |
-| Frontend | Vitest | 34 | `pnpm test` |
-| Python | pytest | 45 | `cd sidecar && uv run pytest` |
-| **Total** | | **129** | |
+| Rust | `cargo test` | 108 | `cd src-tauri && cargo test` |
+| Frontend | Vitest | 199 | `pnpm test` |
+| Python | pytest | 83 | `cd sidecar && uv run pytest` |
+| **Total** | | **390** | |
 
 ### 10.2 Frontend Test Setup (src/test/setup.ts)
 
@@ -599,7 +678,7 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 
 | Area | Coverage | Notes |
 |---|---|---|
-| `db.rs` | Thorough | 8 tests, all CRUD paths, in-memory SQLite |
+| `db.rs` | Very thorough | ~40 tests, all CRUD paths for entities/notes/tasks/links, in-memory SQLite |
 | `osc_parser.rs` | Very thorough | 14 tests, edge cases, split-across-chunks |
 | `shell_hooks.rs` | Good | 8 tests |
 | `watcher.rs` | Good | 7 tests (unit + file creation detection) |
@@ -608,9 +687,15 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 | `pty.rs` | Minimal | 5 tests (all negative/empty cases, no integration) |
 | `chunking.py` | Very thorough | 25 tests, all strategies and edge cases |
 | `test_ingest.py` | Good | 14 tests, round-trip ingestion, filters, deletion |
+| `reference_extraction.py` | Good | ~12 tests, URLs/paths/code symbols/code TODOs |
+| `terminal_extraction.py` | Good | 13 tests, compile errors/test failures/runtime errors |
 | `SearchPanel.tsx` | Good | 7 tests, filters, invoke args, results |
 | `IndexingStatus.tsx` | Good | 5 tests, event-driven states |
 | `terminalState.ts` | Good | 9 tests, all public API functions |
+| `taskState.ts` | Good | 12 tests, CRUD + sort/group/kanban/viewMode |
+| `tasks.ts` | Good | 8 tests, all IPC wrappers |
+| `TaskPanel.tsx` | Good | 12 tests, kanban view, inline edit, source badges, sort/group |
+| `NotesPanel.tsx` | Good | Multiple tests, CRUD + auto-linking |
 | `TerminalPanel.tsx` | Minimal | 3 tests, structural only |
 
 ---
@@ -630,7 +715,7 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 | # | Location | Description |
 |---|---|---|
 | **B4** | `sidecar/main.py` DELETE + search | **Filter predicate injection.** All filter conditions use f-strings with unsanitized user input: `table.delete(f"source_file = '{source_file}'")`. A crafted value could inject arbitrary LanceDB predicates. |
-| **B5** | `db.rs` | **6 schema tables have no Rust CRUD functions.** `session_states`, `entity_links`, `tasks`, `chat_messages`, `git_events`, `app_config` -- tables exist but are completely unimplemented from the application side. |
+| **B5** | `db.rs` | **3 schema tables have no Rust CRUD functions.** `session_states`, `chat_messages`, `git_events` -- tables exist but are completely unimplemented. (`entity_links`, `tasks`, `app_config` now have full CRUD.) |
 | **B6** | `db.rs` `insert_terminal_command` | **Dead code.** Defined and tested but never called from any non-test code path. Terminal commands are parsed via OSC 633 and emitted as events but never persisted. |
 | **B7** | `chunking.py` TSX | **TSX falls through to word-window.** `"tsx"` is in `_CODE_LANGUAGES` and its grammar loads, but there's no entry in `_CODE_NODE_TYPES` for it. All TSX files get chunked as plain text. |
 
@@ -708,11 +793,48 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 - ResizeObserver-based terminal resize with PTY size sync
 - Proper cleanup on unmount (unlisten events, dispose terminal, kill PTY)
 
+### Phase 4a: Editor Foundation -- DONE
+- CodeMirror 6 integration with language detection (Rust, Python, TypeScript, JavaScript, Markdown, JSON, YAML, HTML, CSS, SQL)
+- File read/write via Tauri IPC (`file_read`, `file_write` commands)
+- Auto-save with 1s debounce
+- EditorPanel component with file path input and status indicators
+
+### Phase 5a: Notes & Entity Extraction -- DONE
+- Notes CRUD (create, read, update, delete) with SQLite-backed entities
+- NotesPanel with CodeMirror 6 markdown editor
+- Note auto-save with debounce
+- Sidecar reference extraction endpoint (`/extract-references`)
+- URL, file path, action item, and code symbol extraction with confidence scores
+- Fuzzy matching against known symbols via rapidfuzz
+
+### Phase 5b: Auto-Linking & Entity Links -- DONE
+- `entity_links` table fully implemented with CRUD functions
+- `note_auto_link` command: extracts references from note content and auto-creates entity links
+- Code symbol linking with confidence scores (exact match = 1.0, fuzzy match = 0.85-0.99)
+- URL and file path entity linking
+- Entity search function with LIKE queries across entity types
+- Link relationship types: `references_code`, `references_file`, `references_url`, `contains_task`
+
+### Phase 5c: Task Auto-Extraction & Enhanced TaskPanel -- DONE
+- Task `source_type` field through full stack (Rust `TaskRow`, frontend `TaskRow`, SQL queries)
+- Auto-extraction of tasks from notes: TODO/FIXME action items → tasks with `source_type="note"`
+- Auto-extraction of tasks from code comments: sidecar `/extract-code-todos` endpoint + watcher integration → tasks with `source_type="code_comment"`
+- Auto-extraction of tasks from terminal errors: sidecar `/extract-terminal-tasks` endpoint + `extract_tasks_from_terminal` command → tasks with `source_type="terminal"`
+- Terminal error patterns: compile errors (Rust, TypeScript, Python), test failures, runtime errors (panics, tracebacks)
+- Task deduplication via `find_task_by_title` to prevent duplicate auto-extractions
+- Enhanced TaskPanel with Kanban board view (3 columns: Todo, In Progress, Done)
+- View mode toggle (List | Board)
+- Sort controls (Created, Priority, Due Date, Status)
+- Group controls (None, Status, Priority, Source)
+- Inline edit form (title, status, priority)
+- Source type badges (N=note, C=code, T=terminal)
+- Inline task creation with Enter/Escape
+
 ### Test Coverage
-- 50 Rust tests passing
-- 34 Frontend tests passing (Vitest + jsdom)
-- 45 Python tests passing (pytest)
-- Total: 129 tests
+- 108 Rust tests passing
+- 199 Frontend tests passing (Vitest + jsdom)
+- 83 Python tests passing (pytest)
+- Total: 390 tests
 
 ---
 
@@ -739,11 +861,8 @@ Listed in rough priority order per the project roadmap:
 - Workspace profile CRUD + switching UI
 - Historical session queries
 
-### Phase 4: Code Editor
-- CodeMirror 6 setup (not even a dependency yet)
+### Phase 4 Remaining: Code Editor Advanced
 - File tree browser (Cmd+P fuzzy finder)
-- File open/edit/save operations
-- Syntax highlighting (CodeMirror + tree-sitter)
 - Multiple editor tabs in split panes
 - Git gutter (modified/added/deleted indicators)
 - LSP integration for Python (pyright/pylsp: autocomplete, hover, go-to-definition)
@@ -751,16 +870,13 @@ Listed in rough priority order per the project roadmap:
 - Inline AI suggestions (ghost text)
 - Refactoring agent panel
 
-### Phase 5: Knowledge Graph & Tasks
-- Full entity extraction pipeline on all content types
-- Auto-linking with confidence scores (exact, fuzzy, semantic)
-- Temporal co-occurrence linking
-- Link suggestion UI (dashed suggested links for 0.70-0.85 confidence)
-- Task auto-extraction from code comments and terminal errors
-- Task board (Kanban/list view, filter by profile/priority/status)
-- Notes panel (create/edit/view markdown, indexed and linked)
-- Universal search (all entity types, all vector collections, hybrid)
+### Phase 5 Remaining: Knowledge Graph Advanced (5d+)
+- Temporal co-occurrence linking (entities active in same session)
+- Link suggestion UI (dashed suggested links for 0.70-0.85 confidence, confirm/dismiss)
+- Universal search (all entity types, all vector collections, hybrid keyword + vector)
 - Bidirectional links in editor (hover function -> see notes/tasks)
+- Graph visualization (interactive node/edge view with D3.js or similar)
+- Task lineage display (source note, related code, linked experiments on task card)
 
 ### Phase 6: Background Agents & Polish
 - Research daemon (ArXiv RSS monitoring)
@@ -858,6 +974,7 @@ Listed in rough priority order per the project roadmap:
 | Vision scenarios | `project_strategy/reference/18_vision.md` |
 | Current execution state | `conductor/tracks/context_engine_20260226/plan.md` |
 | Session log (Feb 27) | `docs/feb_27_updates.md` |
+| Session log (Feb 28) | `docs/feb_28_updates.md` |
 | Dev workflow protocol | `conductor/workflow.md` |
 | Product definition | `conductor/product.md` |
 | Brand/UX guidelines | `conductor/product-guidelines.md` |

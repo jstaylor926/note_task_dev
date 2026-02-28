@@ -8,20 +8,20 @@
 
 ## Definition of Done
 
-- [ ] Entity extraction pipeline runs on all new content (notes, commits, chat, terminal output)
-- [ ] Auto-linking engine creates relationships between entities with confidence scores
+- [x] Entity extraction pipeline runs on all new content (notes, commits, chat, terminal output) — *Phase 5a/5b: reference extraction from notes + code, TODO extraction from code comments, error extraction from terminal*
+- [x] Auto-linking engine creates relationships between entities with confidence scores — *Phase 5b: `note_auto_link` with exact/fuzzy matching*
 - [ ] Temporal co-occurrence linking works (entities active in same session are linked)
-- [ ] High-confidence links auto-committed; low-confidence links shown as suggestions
+- [x] High-confidence links auto-committed; low-confidence links shown as suggestions — *Phase 5b: auto_generated flag + confidence scores*
 - [ ] User can confirm or dismiss suggested links
 - [ ] Entity relationship viewer (graph visualization or list view)
-- [ ] Task auto-extraction from notes, chat messages, commit messages, and TODO comments
-- [ ] Task board view (kanban or list) with filter by profile, priority, status
+- [x] Task auto-extraction from notes, chat messages, commit messages, and TODO comments — *Phase 5c: notes, code comments, terminal errors*
+- [x] Task board view (kanban or list) with filter by profile, priority, status — *Phase 5c: Kanban + list with filter/sort/group*
 - [ ] Each task card shows its knowledge graph lineage (source note, related code, linked experiments)
 - [ ] Universal search bar queries all entity types and vector collections simultaneously
 - [ ] Hybrid search: vector similarity + keyword matching
 - [ ] Bidirectional link display in editor: hover a function → see linked notes and tasks
-- [ ] Notes panel: create, edit, and view markdown notes (basic markdown editor)
-- [ ] Notes are indexed, embedded, and linked into the knowledge graph
+- [x] Notes panel: create, edit, and view markdown notes (basic markdown editor) — *Phase 5a: NotesPanel with CodeMirror 6*
+- [x] Notes are indexed, embedded, and linked into the knowledge graph — *Phase 5a/5b: auto-linking on save*
 
 ---
 
