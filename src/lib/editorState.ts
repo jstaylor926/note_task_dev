@@ -8,31 +8,54 @@ export interface EditorFile {
   language: string | undefined;
 }
 
+export interface EditorTab {
+  id: string;
+  file: EditorFile;
+}
+
 interface EditorState {
-  activeFile: EditorFile | null;
+  tabs: EditorTab[];
+  activeTabIndex: number;
   isLoading: boolean;
   error: string | null;
 }
 
 const LARGE_FILE_LINE_THRESHOLD = 50000;
 
+let nextId = 0;
+function genId(prefix: string): string {
+  return `${prefix}-${++nextId}`;
+}
+
+export function resetIdCounter() {
+  nextId = 0;
+}
+
 export function createEditorStore() {
   const [state, setState] = createStore<EditorState>({
-    activeFile: null,
+    tabs: [],
+    activeTabIndex: 0,
     isLoading: false,
     error: null,
   });
 
   function openFile(path: string, content: string) {
+    const existing = findTabByPath(path);
+    if (existing !== -1) {
+      setActiveTab(existing);
+      return;
+    }
+
     const language = getLanguageFromPath(path);
+    const tab: EditorTab = {
+      id: genId('tab'),
+      file: { path, content, savedContent: content, language },
+    };
+
     setState(
       produce((s) => {
-        s.activeFile = {
-          path,
-          content,
-          savedContent: content,
-          language,
-        };
+        s.tabs.push(tab);
+        s.activeTabIndex = s.tabs.length - 1;
         s.isLoading = false;
         s.error = null;
       }),
@@ -55,8 +78,9 @@ export function createEditorStore() {
   function updateContent(content: string) {
     setState(
       produce((s) => {
-        if (s.activeFile) {
-          s.activeFile.content = content;
+        const tab = s.tabs[s.activeTabIndex];
+        if (tab) {
+          tab.file.content = content;
         }
       }),
     );
@@ -65,33 +89,67 @@ export function createEditorStore() {
   function markSaved() {
     setState(
       produce((s) => {
-        if (s.activeFile) {
-          s.activeFile.savedContent = s.activeFile.content;
+        const tab = s.tabs[s.activeTabIndex];
+        if (tab) {
+          tab.file.savedContent = tab.file.content;
         }
       }),
     );
   }
 
-  function closeFile() {
+  function closeTab(tabId: string) {
     setState(
       produce((s) => {
-        s.activeFile = null;
+        const idx = s.tabs.findIndex((t) => t.id === tabId);
+        if (idx === -1) return;
+        s.tabs.splice(idx, 1);
+        if (s.tabs.length === 0) {
+          s.activeTabIndex = 0;
+        } else if (s.activeTabIndex >= s.tabs.length) {
+          s.activeTabIndex = s.tabs.length - 1;
+        }
         s.error = null;
       }),
     );
   }
 
-  function isDirty(): boolean {
-    const file = state.activeFile;
-    if (!file) return false;
-    return file.content !== file.savedContent;
+  function closeFile() {
+    const tab = state.tabs[state.activeTabIndex];
+    if (tab) {
+      closeTab(tab.id);
+    }
+  }
+
+  function setActiveTab(index: number) {
+    if (index >= 0 && index < state.tabs.length) {
+      setState('activeTabIndex', index);
+    }
+  }
+
+  function findTabByPath(path: string): number {
+    return state.tabs.findIndex((t) => t.file.path === path);
+  }
+
+  function isDirty(tabIndex?: number): boolean {
+    const idx = tabIndex ?? state.activeTabIndex;
+    const tab = state.tabs[idx];
+    if (!tab) return false;
+    return tab.file.content !== tab.file.savedContent;
+  }
+
+  function isAnyDirty(): boolean {
+    return state.tabs.some((t) => t.file.content !== t.file.savedContent);
   }
 
   function isLargeFile(): boolean {
-    const file = state.activeFile;
-    if (!file) return false;
-    const lineCount = file.content.split('\n').length;
+    const tab = state.tabs[state.activeTabIndex];
+    if (!tab) return false;
+    const lineCount = tab.file.content.split('\n').length;
     return lineCount > LARGE_FILE_LINE_THRESHOLD;
+  }
+
+  function getActiveFile(): EditorFile | null {
+    return state.tabs[state.activeTabIndex]?.file ?? null;
   }
 
   return {
@@ -101,8 +159,13 @@ export function createEditorStore() {
     setError,
     updateContent,
     markSaved,
+    closeTab,
     closeFile,
+    setActiveTab,
+    findTabByPath,
     isDirty,
+    isAnyDirty,
     isLargeFile,
+    getActiveFile,
   };
 }

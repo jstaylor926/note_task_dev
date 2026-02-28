@@ -35,8 +35,8 @@ vi.mock('@xterm/addon-search', () => {
 });
 
 beforeEach(() => {
-  // Clear the state from module-level stores for each test
   vi.clearAllMocks();
+  vi.resetModules();
 });
 
 afterEach(() => {

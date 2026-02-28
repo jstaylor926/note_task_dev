@@ -1,11 +1,12 @@
 import { onMount, onCleanup, For, Show, createEffect } from 'solid-js';
-import { createTerminalStore, type PaneNode } from '../lib/terminalState';
+import { type PaneNode } from '../lib/terminalState';
+import { terminalStore } from '../lib/terminalStoreInstance';
 import XtermInstance from './XtermInstance';
 import PaneContainer from './PaneContainer';
 
 function TerminalPanel() {
   const { state, addTab, removeTab, setActiveTab, setActivePaneId, splitPane, closePane, resizeSplit } =
-    createTerminalStore();
+    terminalStore;
 
   onMount(() => {
     // Create initial tab

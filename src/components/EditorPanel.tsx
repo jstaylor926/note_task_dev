@@ -1,13 +1,17 @@
-import { Show, createMemo } from 'solid-js';
+import { Show, For, createMemo } from 'solid-js';
 import CodeMirrorEditor from './CodeMirrorEditor';
 import { createEditorStore } from '../lib/editorState';
 import { fileRead, fileWrite } from '../lib/files';
+import { getRunCommand } from '../lib/runFile';
+import { getActiveSessionId } from '../lib/terminalState';
+import { terminalStore } from '../lib/terminalStoreInstance';
+import { ptyWrite } from '../lib/pty';
 
 const editorStore = createEditorStore();
 
 export { editorStore };
 
-async function handleOpenFile(path: string) {
+export async function handleOpenFile(path: string) {
   editorStore.setLoading(true);
   try {
     const response = await fileRead(path);
@@ -18,7 +22,7 @@ async function handleOpenFile(path: string) {
 }
 
 async function handleSave() {
-  const file = editorStore.state.activeFile;
+  const file = editorStore.getActiveFile();
   if (!file) return;
   try {
     await fileWrite(file.path, file.content);
@@ -28,48 +32,106 @@ async function handleSave() {
   }
 }
 
+function handleRunInTerminal() {
+  const file = editorStore.getActiveFile();
+  if (!file) return;
+  const cmd = getRunCommand(file.path, file.language);
+  if (!cmd) return;
+
+  const tab = terminalStore.state.tabs[terminalStore.state.activeTabIndex];
+  if (!tab) return;
+  const sessionId = getActiveSessionId(tab.layout, terminalStore.state.activePaneId);
+  if (!sessionId) return;
+
+  const encoded = btoa(cmd + '\n');
+  ptyWrite(sessionId, encoded);
+}
+
 function handleKeyDown(e: KeyboardEvent) {
-  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+  const meta = e.metaKey || e.ctrlKey;
+  if (meta && e.key === 's') {
     e.preventDefault();
     handleSave();
+  } else if (meta && e.key === 'w') {
+    e.preventDefault();
+    e.stopPropagation();
+    editorStore.closeFile();
+  } else if (meta && e.key === 'Enter') {
+    e.preventDefault();
+    handleRunInTerminal();
   }
 }
 
 function EditorPanel() {
-  const isDirty = createMemo(() => editorStore.isDirty());
+  const activeFile = createMemo(() => editorStore.getActiveFile());
   const isLarge = createMemo(() => editorStore.isLargeFile());
-  const fileName = createMemo(() => {
-    const file = editorStore.state.activeFile;
-    if (!file) return '';
-    const parts = file.path.split('/');
-    return parts[parts.length - 1];
-  });
 
   return (
     <div
       class="h-full w-full flex flex-col bg-[var(--color-bg-primary)]"
       onKeyDown={handleKeyDown}
+      tabIndex={-1}
     >
-      {/* Editor header bar */}
-      <Show when={editorStore.state.activeFile}>
-        <div class="h-8 flex items-center px-3 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] shrink-0">
-          <span class="text-xs text-[var(--color-text-primary)] font-mono truncate">
-            {fileName()}
-            <Show when={isDirty()}>
-              <span class="text-[var(--color-accent)] ml-1" title="Unsaved changes">
-                *
+      {/* Tab bar */}
+      <Show when={editorStore.state.tabs.length > 0}>
+        <div class="flex items-center h-8 shrink-0 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
+          <div class="flex-1 flex items-center overflow-x-auto">
+            <For each={editorStore.state.tabs}>
+              {(tab, index) => {
+                const dirty = createMemo(() => editorStore.isDirty(index()));
+                const fileName = createMemo(() => {
+                  const parts = tab.file.path.split('/');
+                  return parts[parts.length - 1];
+                });
+
+                return (
+                  <button
+                    class={`px-3 h-full text-xs flex items-center gap-1 border-r border-[var(--color-border)] ${
+                      index() === editorStore.state.activeTabIndex
+                        ? 'bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]'
+                        : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-primary)]/50'
+                    }`}
+                    onClick={() => editorStore.setActiveTab(index())}
+                    data-testid={`editor-tab-${index()}`}
+                  >
+                    <span class="font-mono truncate">
+                      {fileName()}
+                      <Show when={dirty()}>
+                        <span class="text-[var(--color-accent)] ml-0.5">*</span>
+                      </Show>
+                    </span>
+                    <span
+                      class="ml-1 hover:text-[var(--color-text-primary)] text-[10px] leading-none"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        editorStore.closeTab(tab.id);
+                      }}
+                      data-testid={`editor-tab-close-${index()}`}
+                    >
+                      x
+                    </span>
+                  </button>
+                );
+              }}
+            </For>
+          </div>
+        </div>
+      </Show>
+
+      {/* Editor header bar showing language */}
+      <Show when={activeFile()}>
+        {(file) => (
+          <div class="h-6 flex items-center px-3 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] shrink-0">
+            <Show when={isLarge()}>
+              <span class="text-xs text-[var(--color-error)] mr-2">
+                Large file - read-only mode
               </span>
             </Show>
-          </span>
-          <Show when={isLarge()}>
-            <span class="text-xs text-[var(--color-error)] ml-2">
-              Large file - read-only mode
+            <span class="ml-auto text-xs text-[var(--color-text-secondary)] font-mono">
+              {file().language ?? 'plain text'}
             </span>
-          </Show>
-          <span class="ml-auto text-xs text-[var(--color-text-secondary)] font-mono">
-            {editorStore.state.activeFile?.language ?? 'plain text'}
-          </span>
-        </div>
+          </div>
+        )}
       </Show>
 
       {/* Main editor area */}
@@ -95,7 +157,7 @@ function EditorPanel() {
             }
           >
             <Show
-              when={editorStore.state.activeFile}
+              when={activeFile()}
               fallback={<WelcomeView onOpenFile={handleOpenFile} />}
             >
               {(file) => (

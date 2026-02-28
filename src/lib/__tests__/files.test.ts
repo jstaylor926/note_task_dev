@@ -63,4 +63,24 @@ describe('files lib', () => {
     const { fileRead } = await import('../files');
     await expect(fileRead('/nonexistent')).rejects.toThrow('File not found');
   });
+
+  it('getWorkspaceRoot calls invoke with no args', async () => {
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValue('/home/user/project');
+    const { getWorkspaceRoot } = await import('../files');
+    const result = await getWorkspaceRoot();
+    expect(invoke).toHaveBeenCalledWith('get_workspace_root');
+    expect(result).toBe('/home/user/project');
+  });
+
+  it('fileListAll calls invoke with root arg', async () => {
+    const mockEntries = [
+      { path: '/project/main.rs', relative_path: 'main.rs', is_dir: false, extension: 'rs' },
+      { path: '/project/lib.ts', relative_path: 'lib.ts', is_dir: false, extension: 'ts' },
+    ];
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValue(mockEntries);
+    const { fileListAll } = await import('../files');
+    const result = await fileListAll('/project');
+    expect(invoke).toHaveBeenCalledWith('file_list_all', { root: '/project' });
+    expect(result).toEqual(mockEntries);
+  });
 });

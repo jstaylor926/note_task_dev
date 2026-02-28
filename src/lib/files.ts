@@ -44,3 +44,18 @@ export async function fileListDirectory(
 export async function fileStat(path: string): Promise<FileStat> {
   return invoke<FileStat>('file_stat', { path });
 }
+
+export interface FileEntry {
+  path: string;
+  relative_path: string;
+  is_dir: boolean;
+  extension: string | null;
+}
+
+export async function getWorkspaceRoot(): Promise<string> {
+  return invoke<string>('get_workspace_root');
+}
+
+export async function fileListAll(root: string): Promise<FileEntry[]> {
+  return invoke<FileEntry[]>('file_list_all', { root });
+}

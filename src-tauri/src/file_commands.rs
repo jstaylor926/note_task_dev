@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::fs;
 use std::path::Path;
+use crate::AppState;
 
 #[derive(Debug, Serialize)]
 pub struct FileReadResponse {
@@ -158,6 +159,70 @@ pub async fn file_stat(path: String) -> Result<FileStat, String> {
     })
 }
 
+#[derive(Debug, Serialize)]
+pub struct FileEntry {
+    pub path: String,
+    pub relative_path: String,
+    pub is_dir: bool,
+    pub extension: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_workspace_root(
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    Ok(state.project_root.clone())
+}
+
+#[tauri::command]
+pub async fn file_list_all(root: String) -> Result<Vec<FileEntry>, String> {
+    let root_path = Path::new(&root);
+    if !root_path.is_dir() {
+        return Err(format!("Root '{}' is not a directory", root));
+    }
+
+    let mut builder = ignore::WalkBuilder::new(root_path);
+    builder
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true);
+
+    let contextignore = root_path.join(".contextignore");
+    if contextignore.exists() {
+        builder.add_ignore(&contextignore);
+    }
+
+    let mut entries = Vec::new();
+    for result in builder.build().flatten() {
+        let path = result.path().to_path_buf();
+        if !path.is_file() {
+            continue;
+        }
+
+        let relative = path
+            .strip_prefix(root_path)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+
+        let extension = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_string());
+
+        entries.push(FileEntry {
+            path: path.to_string_lossy().to_string(),
+            relative_path: relative,
+            is_dir: false,
+            extension,
+        });
+    }
+
+    entries.sort_by(|a, b| a.relative_path.to_lowercase().cmp(&b.relative_path.to_lowercase()));
+
+    Ok(entries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +356,81 @@ mod tests {
     #[tokio::test]
     async fn test_file_stat_nonexistent() {
         let result = file_stat("/nonexistent/path".to_string()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_file_list_all_returns_files() {
+        let dir = setup_test_dir();
+        let root = dir.path().to_string_lossy().to_string();
+        let entries = file_list_all(root).await.unwrap();
+
+        // Should find hello.txt, code.rs, subdir/nested.md
+        assert_eq!(entries.len(), 3);
+        assert!(entries.iter().all(|e| !e.is_dir));
+    }
+
+    #[tokio::test]
+    async fn test_file_list_all_relative_paths() {
+        let dir = setup_test_dir();
+        let root = dir.path().to_string_lossy().to_string();
+        let entries = file_list_all(root).await.unwrap();
+
+        let rel_paths: Vec<&str> = entries.iter().map(|e| e.relative_path.as_str()).collect();
+        assert!(rel_paths.contains(&"hello.txt"));
+        assert!(rel_paths.contains(&"code.rs"));
+        assert!(rel_paths.contains(&"subdir/nested.md"));
+    }
+
+    #[tokio::test]
+    async fn test_file_list_all_sorted_alphabetically() {
+        let dir = setup_test_dir();
+        let root = dir.path().to_string_lossy().to_string();
+        let entries = file_list_all(root).await.unwrap();
+
+        let rel_paths: Vec<&str> = entries.iter().map(|e| e.relative_path.as_str()).collect();
+        // Should be: code.rs, hello.txt, subdir/nested.md
+        assert_eq!(rel_paths, vec!["code.rs", "hello.txt", "subdir/nested.md"]);
+    }
+
+    #[tokio::test]
+    async fn test_file_list_all_respects_gitignore() {
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path();
+
+        // Init git repo so .gitignore is recognized
+        fs::create_dir(dir_path.join(".git")).unwrap();
+        fs::write(dir_path.join(".gitignore"), "ignored_dir/\n").unwrap();
+        fs::write(dir_path.join("main.rs"), "fn main() {}").unwrap();
+        fs::create_dir(dir_path.join("ignored_dir")).unwrap();
+        fs::write(dir_path.join("ignored_dir/lib.rs"), "fn lib() {}").unwrap();
+
+        let root = dir_path.to_string_lossy().to_string();
+        let entries = file_list_all(root).await.unwrap();
+
+        // Should only find main.rs (not files in ignored_dir)
+        // .gitignore itself may or may not appear depending on ignore crate behavior
+        let rel_paths: Vec<&str> = entries.iter().map(|e| e.relative_path.as_str()).collect();
+        assert!(rel_paths.contains(&"main.rs"));
+        assert!(!rel_paths.iter().any(|p| p.starts_with("ignored_dir/")));
+    }
+
+    #[tokio::test]
+    async fn test_file_list_all_includes_extensions() {
+        let dir = setup_test_dir();
+        let root = dir.path().to_string_lossy().to_string();
+        let entries = file_list_all(root).await.unwrap();
+
+        let rs_entry = entries.iter().find(|e| e.relative_path == "code.rs").unwrap();
+        assert_eq!(rs_entry.extension, Some("rs".to_string()));
+
+        let md_entry = entries.iter().find(|e| e.relative_path == "subdir/nested.md").unwrap();
+        assert_eq!(md_entry.extension, Some("md".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_file_list_all_nonexistent_root() {
+        let result = file_list_all("/nonexistent/root".to_string()).await;
         assert!(result.is_err());
     }
 }

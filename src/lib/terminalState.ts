@@ -204,6 +204,26 @@ function splitNode(
   };
 }
 
+export function getActiveSessionId(
+  layout: PaneNode,
+  activePaneId: string | null,
+): string | null {
+  if (!activePaneId) return null;
+  const pane = findPaneById(layout, activePaneId);
+  return pane && pane.type === 'pane' ? pane.sessionId : null;
+}
+
+function findPaneById(node: PaneNode, paneId: string): PaneNode | null {
+  if (node.type === 'pane') {
+    return node.id === paneId ? node : null;
+  }
+  for (const child of node.children) {
+    const found = findPaneById(child, paneId);
+    if (found) return found;
+  }
+  return null;
+}
+
 function removeNode(node: PaneNode, targetId: string): PaneNode {
   if (node.type === 'pane') return node;
 

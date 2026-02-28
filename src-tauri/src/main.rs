@@ -44,6 +44,7 @@ pub struct AppState {
     pub git_branch: String,
     pub pty_manager: Mutex<pty::PtyManager>,
     pub shell_hooks_dir: Option<std::path::PathBuf>,
+    pub project_root: String,
 }
 
 /// Detect the current git branch by running `git rev-parse --abbrev-ref HEAD`.
@@ -139,6 +140,7 @@ fn main() {
                 git_branch,
                 pty_manager: Mutex::new(pty::PtyManager::new()),
                 shell_hooks_dir,
+                project_root: project_root.to_string_lossy().to_string(),
             };
             app.manage(state);
 
@@ -218,6 +220,8 @@ fn main() {
             file_commands::file_write,
             file_commands::file_list_directory,
             file_commands::file_stat,
+            file_commands::get_workspace_root,
+            file_commands::file_list_all,
         ])
         .build(tauri::generate_context!())
         .expect("error building cortex")
