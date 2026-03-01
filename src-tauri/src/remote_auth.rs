@@ -165,6 +165,7 @@ impl ErrorResponse {
 #[derive(Clone)]
 pub struct RemoteAppState {
     pub db: Arc<Mutex<rusqlite::Connection>>,
+    pub app_handle: tauri::AppHandle,
     pub sidecar_url: String,
     pub project_root: String,
     pub pairing: PairingState,

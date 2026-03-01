@@ -8,20 +8,63 @@ import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
 import { lintKeymap } from '@codemirror/lint';
 import { cortexThemeExtension } from '../lib/codemirrorTheme';
 import { getLanguageExtension } from '../lib/codemirrorLanguages';
+import { LanguageServerClient, languageServerWithTransport } from 'codemirror-languageserver';
+import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 export interface CodeMirrorEditorProps {
   content: string;
+  path?: string;
   language?: string;
   readonly?: boolean;
   onContentChange?: (content: string) => void;
 }
 
+class TauriLspTransport {
+  private sessionId: string | null = null;
+  private unlisten: UnlistenFn | null = null;
+  public onData: ((data: any) => void) | null = null;
+
+  constructor(private language: string, private serverUri: string) {}
+
+  async connect() {
+    this.sessionId = await invoke<string>('lsp_spawn', { language: this.language });
+    this.unlisten = await listen<{ session_id: string, message: string }>('lsp:message', (event) => {
+      if (event.payload.session_id === this.sessionId && this.onData) {
+        this.onData(JSON.parse(event.payload.message));
+      }
+    });
+  }
+
+  sendData(data: any) {
+    if (this.sessionId) {
+      invoke('lsp_send', { sessionId: this.sessionId, message: JSON.stringify(data) });
+    }
+  }
+
+  close() {
+    this.unlisten?.();
+  }
+
+  subscribe(name: string, callback: any) {
+    if (name === 'data') this.onData = callback;
+  }
+  unsubscribe() {
+    this.onData = null;
+  }
+}
+
 function CodeMirrorEditor(props: CodeMirrorEditorProps) {
   let containerRef: HTMLDivElement | undefined;
   let view: EditorView | undefined;
+  let transport: TauriLspTransport | undefined;
 
-  onMount(() => {
-    if (!containerRef) return;
+  onMount(async () => {
+    console.log("CodeMirrorEditor mounting for path:", props.path);
+    if (!containerRef) {
+      console.error("CodeMirrorEditor: containerRef is undefined");
+      return;
+    }
 
     const languageExt = getLanguageExtension(props.language);
 
@@ -58,6 +101,32 @@ function CodeMirrorEditor(props: CodeMirrorEditorProps) {
       extensions.push(EditorState.readOnly.of(true));
     }
 
+    // Add LSP if language is supported and path exists
+    if (props.path && (props.language === 'python' || props.language === 'rust')) {
+      const serverUri = `file://${props.path}`;
+      const lspTransport = new TauriLspTransport(props.language, serverUri);
+      transport = lspTransport;
+      
+      try {
+        // Use a timeout for connection to avoid blocking UI forever
+        await Promise.race([
+          lspTransport.connect(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('LSP timeout')), 3000))
+        ]);
+        
+        extensions.push(languageServerWithTransport({
+          transport: lspTransport as any,
+          rootUri: `file://${props.path.substring(0, props.path.lastIndexOf('/'))}`,
+          documentUri: serverUri,
+          languageId: props.language,
+          workspaceFolders: null
+        }));
+      } catch (e) {
+        console.error("Failed to connect to LSP:", e);
+        // Continue without LSP
+      }
+    }
+
     if (props.onContentChange) {
       const callback = props.onContentChange;
       extensions.push(
@@ -73,36 +142,19 @@ function CodeMirrorEditor(props: CodeMirrorEditorProps) {
       doc: props.content,
       extensions,
     });
+    console.log("EditorState created");
 
     view = new EditorView({
       state,
       parent: containerRef,
     });
+    console.log("EditorView initialized");
   });
 
-  // Update content when prop changes externally (e.g., file switch)
-  createEffect(
-    on(
-      () => props.content,
-      (newContent) => {
-        if (!view) return;
-        const currentContent = view.state.doc.toString();
-        if (newContent !== currentContent) {
-          view.dispatch({
-            changes: {
-              from: 0,
-              to: view.state.doc.length,
-              insert: newContent,
-            },
-          });
-        }
-      },
-      { defer: true },
-    ),
-  );
-
+  // ... rest of implementation
   onCleanup(() => {
     view?.destroy();
+    transport?.close();
   });
 
   return (

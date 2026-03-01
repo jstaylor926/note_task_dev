@@ -442,6 +442,37 @@ def chunk_config(source: str, file_path: str = "") -> list[Chunk]:
 
 
 # ---------------------------------------------------------------------------
+# Terminal output chunking
+# ---------------------------------------------------------------------------
+
+def chunk_terminal(content: str, file_path: str = "") -> list[Chunk]:
+    """Chunk terminal output, separating commands from results.
+
+    Args:
+        content: The terminal output string.
+        file_path: Optional path identifier (e.g., terminal_UUID).
+
+    Returns:
+        A list of Chunk objects.
+    """
+    # content is usually "Command: ...\n\nOutput:\n..."
+    # We want to keep it simple but ensure the command is searchable.
+    lines = content.splitlines()
+    command = "Unknown"
+    if lines and lines[0].startswith("Command: "):
+        command = lines[0].replace("Command: ", "").strip()
+
+    # Just use word-window for the bulk, but tag it as terminal
+    chunks = chunk_text(content)
+    for i, c in enumerate(chunks):
+        c.chunk_type = "terminal"
+        c.entity_name = command
+        c.context_header = f"Terminal Command: {command}"
+    
+    return chunks
+
+
+# ---------------------------------------------------------------------------
 # Chunk router — dispatches to the best strategy per language
 # ---------------------------------------------------------------------------
 
@@ -454,6 +485,7 @@ def chunk_file(
     content: str,
     language: str,
     file_path: str = "",
+    source_type: str = "unknown",
 ) -> list[Chunk]:
     """Route to the best chunking strategy for the given language.
 
@@ -463,12 +495,16 @@ def chunk_file(
         content: The full content of the file.
         language: The detected programming language.
         file_path: Optional path to the file.
+        source_type: Optional source type (e.g., 'terminal', 'code').
 
     Returns:
         A list of Chunk objects.
     """
     if not content.strip():
         return []
+
+    if source_type == "terminal":
+        return chunk_terminal(content, file_path=file_path)
 
     if language in _CODE_LANGUAGES:
         result = chunk_code(content, language, file_path=file_path)

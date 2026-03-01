@@ -137,7 +137,7 @@ export function createFileTreeStore() {
       produce((s) => {
         const n = findNodeMut(s.root, path);
         if (n) {
-          (n as Record<string, unknown>)[prop] = value;
+          (n as any)[prop] = value;
         }
       }),
     );

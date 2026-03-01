@@ -21,9 +21,13 @@ portable-pty = "0.8"
 base64 = "0.22"
 # Remote API server (Phase 8: Mobile Companion)
 axum = { version = "0.7", features = ["ws"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 tokio-tungstenite = "0.24"
+mdns-sd = "0.11"
+rcgen = "0.13"
+hostname = "0.4"
 rand = "0.8"
 hex = "0.4"
 chrono = "0.4"

@@ -50,6 +50,45 @@ pub struct EntitySearchResult {
     pub updated_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WorkspaceProfileRow {
+    pub id: String,
+    pub name: String,
+    pub watched_directories: String,
+    pub llm_routing_overrides: Option<String>,
+    pub system_prompt_additions: Option<String>,
+    pub default_model: Option<String>,
+    pub embedding_model: String,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SessionStateRow {
+    pub id: String,
+    pub workspace_profile_id: String,
+    pub payload: String, // JSON blob
+    pub trigger: String,
+    pub duration_minutes: Option<i32>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatMessageRow {
+    pub id: String,
+    pub workspace_profile_id: String,
+    pub thread_id: Option<String>,
+    pub role: String,
+    pub content: String,
+    pub model_used: Option<String>,
+    pub token_count_input: Option<i32>,
+    pub token_count_output: Option<i32>,
+    pub cost_usd: Option<f64>,
+    pub latency_ms: Option<i32>,
+    pub created_at: String,
+}
+
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY,
@@ -219,6 +258,32 @@ CREATE TABLE IF NOT EXISTS paired_devices (
 
 CREATE INDEX IF NOT EXISTS idx_paired_devices_token ON paired_devices(token_hash);
 CREATE INDEX IF NOT EXISTS idx_paired_devices_revoked ON paired_devices(revoked);
+
+-- FTS5 Virtual Table for Search
+CREATE VIRTUAL TABLE IF NOT EXISTS fts_search USING fts5(
+    entity_id UNINDEXED,
+    entity_type UNINDEXED,
+    title,
+    content,
+    tokenize="porter unicode61"
+);
+
+-- Triggers to keep FTS in sync with entities
+CREATE TRIGGER IF NOT EXISTS tr_entities_ai AFTER INSERT ON entities BEGIN
+    INSERT INTO fts_search(entity_id, entity_type, title, content)
+    VALUES (new.id, new.entity_type, new.title, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS tr_entities_ad AFTER DELETE ON entities BEGIN
+    DELETE FROM fts_search WHERE entity_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS tr_entities_au AFTER UPDATE ON entities BEGIN
+    UPDATE fts_search SET 
+        title = new.title,
+        content = new.content
+    WHERE entity_id = old.id;
+END;
 "#;
 
 pub fn initialize(db_path: &Path) -> Result<Connection> {
@@ -272,6 +337,15 @@ pub fn initialize(db_path: &Path) -> Result<Connection> {
                 [key, value],
             )?;
         }
+    }
+
+    // Populate FTS if empty and we have entities
+    let fts_count: i64 = conn.query_row("SELECT COUNT(*) FROM fts_search", [], |row| row.get(0))?;
+    if fts_count == 0 {
+        conn.execute_batch(
+            "INSERT INTO fts_search(entity_id, entity_type, title, content)
+             SELECT id, entity_type, title, content FROM entities"
+        )?;
     }
 
     log::info!("Database initialized at {:?}", db_path);
@@ -655,6 +729,211 @@ pub fn find_task_by_title(conn: &Connection, title: &str, profile_id: &str) -> R
     }
 }
 
+// ─── Workspace Profile CRUD ──────────────────────────────────────────
+
+pub fn create_workspace_profile(
+    conn: &Connection,
+    name: &str,
+    watched_directories: &str,
+    default_model: Option<&str>,
+) -> Result<WorkspaceProfileRow> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO workspace_profiles (id, name, watched_directories, default_model)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![id, name, watched_directories, default_model],
+    )?;
+    get_workspace_profile(conn, &id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn get_workspace_profile(conn: &Connection, id: &str) -> Result<Option<WorkspaceProfileRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, watched_directories, llm_routing_overrides,
+                system_prompt_additions, default_model, embedding_model,
+                is_active, created_at, updated_at
+         FROM workspace_profiles WHERE id = ?1"
+    )?;
+    let mut rows = stmt.query(params![id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(WorkspaceProfileRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            watched_directories: row.get(2)?,
+            llm_routing_overrides: row.get(3)?,
+            system_prompt_additions: row.get(4)?,
+            default_model: row.get(5)?,
+            embedding_model: row.get(6)?,
+            is_active: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+        })),
+        None => Ok(None),
+    }
+}
+
+pub fn list_workspace_profiles(conn: &Connection) -> Result<Vec<WorkspaceProfileRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, watched_directories, llm_routing_overrides,
+                system_prompt_additions, default_model, embedding_model,
+                is_active, created_at, updated_at
+         FROM workspace_profiles ORDER BY name ASC"
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(WorkspaceProfileRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            watched_directories: row.get(2)?,
+            llm_routing_overrides: row.get(3)?,
+            system_prompt_additions: row.get(4)?,
+            default_model: row.get(5)?,
+            embedding_model: row.get(6)?,
+            is_active: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn activate_workspace_profile(conn: &Connection, id: &str) -> Result<bool> {
+    // 1. Deactivate all
+    conn.execute("UPDATE workspace_profiles SET is_active = FALSE", [])?;
+    // 2. Activate one
+    let updated = conn.execute(
+        "UPDATE workspace_profiles SET is_active = TRUE WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(updated > 0)
+}
+
+pub fn update_workspace_profile(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    watched_directories: &str,
+    default_model: Option<&str>,
+) -> Result<bool> {
+    let updated = conn.execute(
+        "UPDATE workspace_profiles 
+         SET name = ?1, watched_directories = ?2, default_model = ?3, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?4",
+        params![name, watched_directories, default_model, id],
+    )?;
+    Ok(updated > 0)
+}
+
+pub fn delete_workspace_profile(conn: &Connection, id: &str) -> Result<bool> {
+    let deleted = conn.execute(
+        "DELETE FROM workspace_profiles WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(deleted > 0)
+}
+
+// ─── Session State CRUD ──────────────────────────────────────────────
+
+pub fn create_session_state(
+    conn: &Connection,
+    profile_id: &str,
+    payload_json: &str,
+    trigger: &str,
+    duration_minutes: Option<i32>,
+) -> Result<String> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO session_states (id, workspace_profile_id, payload, trigger, duration_minutes)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, profile_id, payload_json, trigger, duration_minutes],
+    )?;
+    Ok(id)
+}
+
+pub fn get_latest_session_state(conn: &Connection, profile_id: &str) -> Result<Option<SessionStateRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, workspace_profile_id, payload, trigger, duration_minutes, created_at
+         FROM session_states 
+         WHERE workspace_profile_id = ?1 
+         ORDER BY created_at DESC LIMIT 1"
+    )?;
+    let mut rows = stmt.query(params![profile_id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(SessionStateRow {
+            id: row.get(0)?,
+            workspace_profile_id: row.get(1)?,
+            payload: row.get(2)?,
+            trigger: row.get(3)?,
+            duration_minutes: row.get(4)?,
+            created_at: row.get(5)?,
+        })),
+        None => Ok(None),
+    }
+}
+
+pub fn list_session_history(conn: &Connection, profile_id: &str, limit: usize) -> Result<Vec<SessionStateRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, workspace_profile_id, payload, trigger, duration_minutes, created_at
+         FROM session_states 
+         WHERE workspace_profile_id = ?1 
+         ORDER BY created_at DESC LIMIT ?2"
+    )?;
+    let rows = stmt.query_map(params![profile_id, limit as i64], |row| {
+        Ok(SessionStateRow {
+            id: row.get(0)?,
+            workspace_profile_id: row.get(1)?,
+            payload: row.get(2)?,
+            trigger: row.get(3)?,
+            duration_minutes: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
+// ─── Chat Message CRUD ───────────────────────────────────────────────
+
+pub fn create_chat_message(
+    conn: &Connection,
+    profile_id: &str,
+    thread_id: Option<&str>,
+    role: &str,
+    content: &str,
+    model_used: Option<&str>,
+) -> Result<String> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO chat_messages (id, workspace_profile_id, thread_id, role, content, model_used)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, profile_id, thread_id, role, content, model_used],
+    )?;
+    Ok(id)
+}
+
+pub fn list_chat_history(conn: &Connection, profile_id: &str, limit: usize) -> Result<Vec<ChatMessageRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, workspace_profile_id, thread_id, role, content, model_used,
+                token_count_input, token_count_output, cost_usd, latency_ms, created_at
+         FROM chat_messages 
+         WHERE workspace_profile_id = ?1 
+         ORDER BY created_at DESC LIMIT ?2"
+    )?;
+    let rows = stmt.query_map(params![profile_id, limit as i64], |row| {
+        Ok(ChatMessageRow {
+            id: row.get(0)?,
+            workspace_profile_id: row.get(1)?,
+            thread_id: row.get(2)?,
+            role: row.get(3)?,
+            content: row.get(4)?,
+            model_used: row.get(5)?,
+            token_count_input: row.get(6)?,
+            token_count_output: row.get(7)?,
+            cost_usd: row.get(8)?,
+            latency_ms: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    rows.collect()
+}
+
 // ─── Entity Links ────────────────────────────────────────────────────
 
 /// Create an entity link. Uses ON CONFLICT to upsert.
@@ -862,6 +1141,49 @@ pub fn list_entity_links_with_details(conn: &Connection, entity_id: &str) -> Res
     rows.collect()
 }
 
+/// Get all entities for a profile (for global graph visualization).
+pub fn get_all_entities(conn: &Connection, profile_id: &str) -> Result<Vec<EntitySearchResult>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, entity_type, title, content, source_file, updated_at
+         FROM entities WHERE workspace_profile_id = ?1"
+    )?;
+    let rows = stmt.query_map(params![profile_id], |row| {
+        Ok(EntitySearchResult {
+            id: row.get(0)?,
+            entity_type: row.get(1)?,
+            title: row.get(2)?,
+            content: row.get(3)?,
+            source_file: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Get all links for a profile (for global graph visualization).
+pub fn get_all_links(conn: &Connection, profile_id: &str) -> Result<Vec<EntityLinkRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT el.id, el.source_entity_id, el.target_entity_id, el.relationship_type, 
+                el.confidence, el.auto_generated, el.context, el.created_at
+         FROM entity_links el
+         JOIN entities e ON e.id = el.source_entity_id
+         WHERE e.workspace_profile_id = ?1"
+    )?;
+    let rows = stmt.query_map(params![profile_id], |row| {
+        Ok(EntityLinkRow {
+            id: row.get(0)?,
+            source_entity_id: row.get(1)?,
+            target_entity_id: row.get(2)?,
+            relationship_type: row.get(3)?,
+            confidence: row.get(4)?,
+            auto_generated: row.get(5)?,
+            context: row.get(6)?,
+            created_at: row.get(7)?,
+        })
+    })?;
+    rows.collect()
+}
+
 // ─── Entity Search ───────────────────────────────────────────────────
 
 /// Search entities by keyword (LIKE) with optional type filter.
@@ -1022,6 +1344,38 @@ pub fn delete_paired_device(conn: &Connection, device_id: &str) -> Result<bool> 
         params![device_id],
     )?;
     Ok(affected > 0)
+}
+
+pub fn search_entities_fts(
+    conn: &Connection,
+    query: &str,
+    entity_type: Option<&str>,
+    profile_id: &str,
+    limit: usize,
+) -> Result<Vec<EntitySearchResult>> {
+    let mut sql = "SELECT e.id, e.entity_type, e.title, e.content, e.source_file, e.updated_at
+                   FROM fts_search f
+                   JOIN entities e ON f.entity_id = e.id
+                   WHERE fts_search MATCH ?1 AND e.workspace_profile_id = ?2".to_string();
+    
+    if let Some(t) = entity_type {
+        sql.push_str(&format!(" AND e.entity_type = '{}'", t));
+    }
+    
+    sql.push_str(" ORDER BY rank LIMIT ?3");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![query, profile_id, limit as i64], |row| {
+        Ok(EntitySearchResult {
+            id: row.get(0)?,
+            entity_type: row.get(1)?,
+            title: row.get(2)?,
+            content: row.get(3)?,
+            source_file: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    })?;
+    rows.collect()
 }
 
 /// Get a config value from app_config

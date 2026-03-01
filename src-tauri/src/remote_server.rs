@@ -7,36 +7,101 @@
 //! Default bind: 0.0.0.0:9401 (only when enabled via settings).
 
 use axum::{
-    extract::{Path as AxumPath, Query, State},
+    extract::{Path as AxumPath, Query, State, ws::{Message, WebSocket, WebSocketUpgrade}},
     http::StatusCode,
     middleware,
-    routing::{delete, get, post, put},
+    routing::{delete, get, post},
     Json, Router,
 };
+use axum_server::tls_rustls::RustlsConfig;
+use base64::Engine;
+use futures_util::{sink::SinkExt, stream::StreamExt};
+use mdns_sd::{ServiceDaemon, ServiceInfo};
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use std::net::{SocketAddr, IpAddr, UdpSocket};
+use std::path::PathBuf;
+use tauri::Listener;
 use tower_http::cors::CorsLayer;
 
 use crate::db;
+use crate::pty::detect_default_shell;
 use crate::remote_auth::{
     self, ErrorResponse, PairRequest, PairResponse, PairingChallenge, RemoteAppState,
     VerifyPinRequest, VerifyPinResponse,
 };
+use crate::shell_hooks;
 
 /// Start the remote API server on the given port.
 /// This is spawned as a tokio task from main.rs.
-pub async fn start_server(state: RemoteAppState, port: u16) -> anyhow::Result<()> {
+pub async fn start_server(state: RemoteAppState, port: u16, certs_dir: PathBuf) -> anyhow::Result<()> {
+    // 1. Detect local IP for mDNS
+    let local_ip = get_local_ip().unwrap_or(IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "cortex-host".to_string());
+
+    // 2. Setup TLS
+    std::fs::create_dir_all(&certs_dir)?;
+    let cert_path = certs_dir.join("cert.pem");
+    let key_path = certs_dir.join("key.pem");
+
+    if !cert_path.exists() || !key_path.exists() {
+        log::info!("Generating self-signed TLS certificate for remote API...");
+        let cert = rcgen::generate_simple_self_signed(vec![
+            hostname.clone(),
+            "localhost".to_string(),
+            local_ip.to_string(),
+        ])?;
+        std::fs::write(&cert_path, cert.cert.pem())?;
+        std::fs::write(&key_path, cert.key_pair.serialize_pem())?;
+    }
+
+    let tls_config = RustlsConfig::from_pem_file(cert_path, key_path).await?;
+
+    // 3. Start mDNS advertisement
+    let mdns = ServiceDaemon::new()?;
+    let service_type = "_cortex._tcp.local.";
+    let instance_name = format!("{}-cortex", hostname);
+    let host_name = format!("{}.local.", hostname);
+    let mut properties = HashMap::new();
+    properties.insert("version".to_string(), "1".to_string());
+    properties.insert("name".to_string(), "Cortex Desktop".to_string());
+    properties.insert("tls".to_string(), "true".to_string());
+
+    let service_info = ServiceInfo::new(
+        service_type,
+        &instance_name,
+        &host_name,
+        local_ip,
+        port,
+        properties,
+    )?
+    .enable_addr_auto();
+
+    mdns.register(service_info)?;
+    log::info!("mDNS service registered: {} at {}:{} (HTTPS)", service_type, local_ip, port);
+
     let app = build_router(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    log::info!("Remote API server listening on {}", addr);
+    log::info!("Remote API server listening on {} (HTTPS)", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum_server::bind_rustls(addr, tls_config)
+        .serve(app.into_make_service())
+        .await?;
+    
     Ok(())
 }
 
+fn get_local_ip() -> Option<IpAddr> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    socket.local_addr().ok().map(|addr| addr.ip())
+}
+
+
 pub fn build_router(state: RemoteAppState) -> Router {
-    let api = Router::new()
+    let api_router = Router::new()
         // Health (no auth required)
         .route("/health", get(health_handler))
         // Pairing (no auth required)
@@ -57,12 +122,13 @@ pub fn build_router(state: RemoteAppState) -> Router {
         .route("/terminal/sessions", get(list_terminals).post(create_terminal))
         .route("/terminal/sessions/{id}", delete(kill_terminal))
         .route("/terminal/sessions/{id}/resize", post(resize_terminal))
+        .route("/terminal/sessions/{id}/ws", get(terminal_websocket_handler))
         // Devices management
         .route("/devices", get(list_devices))
         .route("/devices/{id}", delete(revoke_device));
 
     Router::new()
-        .nest("/api/v1", api)
+        .nest("/api/v1", api_router)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             remote_auth::auth_middleware,
@@ -628,19 +694,66 @@ async fn list_terminals(
 }
 
 async fn create_terminal(
-    State(_state): State<RemoteAppState>,
-    Json(_body): Json<CreateTerminalBody>,
+    State(state): State<RemoteAppState>,
+    Json(body): Json<CreateTerminalBody>,
 ) -> Result<(StatusCode, Json<TerminalSession>), (StatusCode, Json<ErrorResponse>)> {
-    // TODO: Terminal creation from remote requires the Tauri AppHandle for event emission.
-    // This will be implemented when we add the app_handle to RemoteAppState.
-    // For now, mobile clients can view/interact with terminals created from the desktop.
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse::new(
-            "NOT_IMPLEMENTED",
-            "Remote terminal creation is not yet implemented. Use existing desktop terminal sessions.",
-        )),
-    ))
+    let session_id = uuid::Uuid::new_v4().to_string();
+
+    // Validate CWD (same as pty_create)
+    let valid_cwd = if let Some(path_str) = body.cwd {
+        let path = std::path::Path::new(&path_str);
+        if !path.exists() || !path.is_dir() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new("INVALID_CWD", "Path does not exist or is not a directory")),
+            ));
+        }
+
+        // Check if it's within workspace (using remote DB connection)
+        let is_allowed = {
+            let conn = state.db.lock().map_err(|e| internal_error(&e.to_string()))?;
+            let watched_dirs = db::get_active_profile_watched_directories(&conn)
+                .map_err(|e| internal_error(&e.to_string()))?;
+            
+            if let Some(dirs) = watched_dirs {
+                if dirs.is_empty() {
+                    true // Allow if no dirs configured
+                } else {
+                    dirs.into_iter().any(|d| path_str.starts_with(&d))
+                }
+            } else {
+                true // Allow if no profile dirs
+            }
+        };
+
+        if !is_allowed {
+             return Err((
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse::new("FORBIDDEN", "Path is outside the workspace scope")),
+            ));
+        }
+        Some(path_str)
+    } else {
+        None
+    };
+
+    // Build shell command with hooks
+    let shell_cmd = state.shell_hooks_dir.as_ref().map(|hook_dir| {
+        let shell_path = detect_default_shell();
+        shell_hooks::build_shell_command(&shell_path, hook_dir)
+    });
+
+    let mut pty_mgr = state.pty_manager.lock().map_err(|e| internal_error(&e.to_string()))?;
+    pty_mgr.create_session(
+        session_id.clone(),
+        state.app_handle.clone(),
+        valid_cwd,
+        shell_cmd,
+        body.cols,
+        body.rows,
+    ).map_err(|e| internal_error(&e))?;
+
+    Ok((StatusCode::CREATED, Json(TerminalSession { session_id })))
 }
 
 async fn kill_terminal(
@@ -650,6 +763,108 @@ async fn kill_terminal(
     let mut pty_mgr = state.pty_manager.lock().map_err(|_| internal_error("Lock failed"))?;
     pty_mgr.kill(&id).map_err(|e| internal_error(&e))?;
     Ok(Json(true))
+}
+
+async fn terminal_websocket_handler(
+    ws: WebSocketUpgrade,
+    AxumPath(id): AxumPath<String>,
+    State(state): State<RemoteAppState>,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    // Check if session exists
+    {
+        let pty_mgr = state.pty_manager.lock().map_err(|e| internal_error(&e.to_string()))?;
+        if !pty_mgr.list_sessions().contains(&id) {
+            return Err(not_found("Terminal session"));
+        }
+    }
+
+    Ok(ws.on_upgrade(move |socket| handle_terminal_socket(socket, id, state)))
+}
+
+async fn handle_terminal_socket(socket: WebSocket, session_id: String, state: RemoteAppState) {
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Message>(100);
+
+    // 1. Forward PTY output to WebSocket
+    let app_handle = state.app_handle.clone();
+    let sid_clone = session_id.clone();
+    let tx_clone = tx.clone();
+
+    // Listen to pty:output for this session
+    let unlisten_output = app_handle.listen(crate::events::PTY_OUTPUT, move |event| {
+        #[derive(Deserialize)]
+        struct OutputPayload { session_id: String, data: String }
+        if let Ok(payload) = serde_json::from_str::<OutputPayload>(event.payload()) {
+            if payload.session_id == sid_clone {
+                let msg = serde_json::json!({
+                    "type": "output",
+                    "data": payload.data
+                }).to_string();
+                let _ = tx_clone.try_send(Message::Text(msg));
+            }
+        }
+    });
+
+    // Listen to pty:exit for this session
+    let sid_clone2 = session_id.clone();
+    let tx_clone2 = tx.clone();
+    let unlisten_exit = app_handle.listen(crate::events::PTY_EXIT, move |event| {
+        #[derive(Deserialize)]
+        struct ExitPayload { session_id: String, exit_code: Option<i32> }
+        if let Ok(payload) = serde_json::from_str::<ExitPayload>(event.payload()) {
+            if payload.session_id == sid_clone2 {
+                let msg = serde_json::json!({
+                    "type": "exit",
+                    "code": payload.exit_code
+                }).to_string();
+                let _ = tx_clone2.try_send(Message::Text(msg));
+            }
+        }
+    });
+
+    // Spawn a task to pump messages from the channel to the WebSocket
+    let _ws_pump = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if ws_sender.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // 2. Forward WebSocket input to PTY
+    let sid_clone3 = session_id.clone();
+    let pty_mgr_clone = state.pty_manager.clone();
+    
+    while let Some(Ok(msg)) = ws_receiver.next().await {
+        match msg {
+            Message::Text(text) => {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if val["type"] == "input" {
+                        if let Some(data_base64) = val["data"].as_str() {
+                            let engine = base64::engine::general_purpose::STANDARD;
+                            if let Ok(decoded) = engine.decode(data_base64.as_bytes()) {
+                                let mut pty_mgr = pty_mgr_clone.lock().unwrap();
+                                let _ = pty_mgr.write(&sid_clone3, &decoded).unwrap_or_else(|e| {
+                                    log::error!("Failed to write to PTY from remote: {}", e);
+                                });
+                            }
+                        }
+                    } else if val["type"] == "resize" {
+                        let cols = val["cols"].as_u64().unwrap_or(80) as u16;
+                        let rows = val["rows"].as_u64().unwrap_or(24) as u16;
+                        let mut pty_mgr = pty_mgr_clone.lock().unwrap();
+                        let _ = pty_mgr.resize(&sid_clone3, cols, rows);
+                    }
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+
+    // Cleanup
+    app_handle.unlisten(unlisten_output);
+    app_handle.unlisten(unlisten_exit);
 }
 
 #[derive(Deserialize)]

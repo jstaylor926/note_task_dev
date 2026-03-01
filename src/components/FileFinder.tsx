@@ -104,11 +104,23 @@ function FileFinder(props: FileFinderProps) {
                 onMouseEnter={() => setSelectedIndex(index())}
                 data-testid={`file-finder-result-${index()}`}
               >
-                <HighlightedText
-                  text={result.text}
-                  matches={result.matches}
-                  isSelected={index() === selectedIndex()}
-                />
+                <div class="flex items-center gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 opacity-70">
+                    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                  <div class="flex-1 flex flex-col min-w-0">
+                    <div class="truncate">
+                      <HighlightedText
+                        text={result.text.split('/').pop() || ''}
+                        matches={result.matches.filter(m => m >= result.text.lastIndexOf('/') + 1).map(m => m - (result.text.lastIndexOf('/') + 1))}
+                        isSelected={index() === selectedIndex()}
+                      />
+                    </div>
+                    <div class={`text-[10px] truncate opacity-60 ${index() === selectedIndex() ? 'text-white' : 'text-[var(--color-text-secondary)]'}`}>
+                      {result.text.substring(0, result.text.lastIndexOf('/'))}
+                    </div>
+                  </div>
+                </div>
               </button>
             )}
           </For>

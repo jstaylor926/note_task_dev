@@ -65,3 +65,20 @@ export async function listSuggestedLinks(entityId: string, minConfidence?: numbe
 export async function countSuggestedLinks(): Promise<number> {
   return invoke<number>('count_suggested_links');
 }
+
+export interface EntitySearchResult {
+  id: string;
+  entity_type: string;
+  title: string;
+  content: string | null;
+  source_file: string | null;
+  updated_at: string;
+}
+
+export async function getAllEntities(): Promise<EntitySearchResult[]> {
+  return invoke<EntitySearchResult[]>('get_all_entities');
+}
+
+export async function getAllLinks(): Promise<EntityLinkRow[]> {
+  return invoke<EntityLinkRow[]>('get_all_links');
+}

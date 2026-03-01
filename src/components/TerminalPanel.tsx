@@ -1,12 +1,48 @@
-import { onMount, onCleanup, For, Show, createEffect } from 'solid-js';
+import { onMount, onCleanup, For, Show, createEffect, createSignal } from 'solid-js';
 import { type PaneNode } from '../lib/terminalState';
 import { terminalStore } from '../lib/terminalStoreInstance';
+import { translateTerminalCommand, type TerminalTranslateResponse } from '../lib/tauri';
 import XtermInstance from './XtermInstance';
 import PaneContainer from './PaneContainer';
 
 function TerminalPanel() {
   const { state, addTab, removeTab, setActiveTab, setActivePaneId, splitPane, closePane, resizeSplit } =
     terminalStore;
+
+  const [showTranslate, setShowTranslate] = createSignal(false);
+  const [translateQuery, setTranslateQuery] = createSignal("");
+  const [isTranslating, setIsTranslating] = createSignal(false);
+  const [translation, setTranslation] = createSignal<TerminalTranslateResponse | null>(null);
+
+  const handleTranslate = async (e: Event) => {
+    e.preventDefault();
+    const query = translateQuery().trim();
+    if (!query || isTranslating()) return;
+
+    setIsTranslating(true);
+    setTranslation(null);
+    try {
+      const res = await translateTerminalCommand(query);
+      setTranslation(res);
+    } catch (e) {
+      console.error("Translation failed:", e);
+    } finally {
+      setIsTranslating(false);
+    }
+  };
+
+  const runSuggestedCommand = () => {
+    const res = translation();
+    if (res && state.activePaneId) {
+      const event = new CustomEvent('terminal:run-command', { 
+        detail: { sessionId: state.activePaneId, command: res.command } 
+      });
+      window.dispatchEvent(event);
+      setShowTranslate(false);
+      setTranslation(null);
+      setTranslateQuery("");
+    }
+  };
 
   onMount(() => {
     // Create initial tab
@@ -77,7 +113,70 @@ function TerminalPanel() {
         >
           +
         </button>
+        <div class="ml-auto flex items-center pr-2 border-l border-[var(--color-border)] ml-2">
+          <button
+            class={`px-2 py-0.5 text-[10px] font-bold rounded transition-colors ${
+              showTranslate() 
+                ? 'bg-[var(--color-accent)] text-white' 
+                : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+            }`}
+            onClick={() => setShowTranslate(!showTranslate())}
+          >
+            ASK AI
+          </button>
+        </div>
       </div>
+
+      {/* NL to Shell UI */}
+      <Show when={showTranslate()}>
+        <div class="bg-[var(--color-bg-secondary)] border-b border-[var(--color-border)] p-2">
+          <form onSubmit={handleTranslate} class="flex gap-2">
+            <input
+              type="text"
+              autofocus
+              value={translateQuery()}
+              onInput={(e) => setTranslateQuery(e.currentTarget.value)}
+              placeholder="What do you want to do? (e.g., 'list all ts files')"
+              class="flex-1 bg-[var(--color-bg-primary)] border border-[var(--color-border)] rounded px-2 py-1 text-xs text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
+            />
+            <button
+              type="submit"
+              disabled={isTranslating() || !translateQuery().trim()}
+              class="px-3 py-1 bg-[var(--color-accent)] text-white text-xs rounded hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
+            >
+              {isTranslating() ? "Translating..." : "Translate"}
+            </button>
+            <button 
+              type="button"
+              onClick={() => {
+                setShowTranslate(false);
+                setTranslation(null);
+                setTranslateQuery("");
+              }}
+              class="px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+            >
+              Cancel
+            </button>
+          </form>
+
+          <Show when={translation()}>
+            <div class="mt-2 p-2 bg-[var(--color-bg-primary)] rounded border border-[var(--color-accent)]/30">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[10px] font-bold text-[var(--color-accent)] uppercase tracking-tight">Suggested Command</span>
+                <span class="text-[10px] text-[var(--color-text-secondary)]">Confidence: {(translation()!.confidence * 100).toFixed(0)}%</span>
+              </div>
+              <code class="block text-xs text-[var(--color-text-primary)] bg-black/30 p-1.5 rounded mb-2 font-mono">{translation()!.command}</code>
+              <p class="text-[11px] text-[var(--color-text-secondary)] mb-2 italic">{translation()!.explanation}</p>
+              <button
+                onClick={runSuggestedCommand}
+                class="text-[10px] font-bold text-white bg-[var(--color-success)] px-2 py-1 rounded hover:opacity-90"
+              >
+                Execute Command
+              </button>
+            </div>
+          </Show>
+        </div>
+      </Show>
 
       {/* Active tab content */}
       <div class="flex-1 min-h-0">

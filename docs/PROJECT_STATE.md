@@ -704,11 +704,7 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 
 ### 11.1 Critical
 
-| # | Location | Description |
-|---|---|---|
-| **B1** | `pty.rs` `PtyManager::write()` | **`take_writer()` called on every `write()` call.** `portable-pty` docs state this can only be called once per PTY master. After the first `pty_write`, every subsequent write for the same session will fail. **The fix:** store the writer in `PtySession` and reuse it. |
-| **B2** | `main.rs:88-97` | **Production sidecar path identical to dev path.** Both branches of `cfg!(debug_assertions)` compute `../sidecar` relative to Cargo manifest. Release builds will fail to find the sidecar unless the source tree is present. |
-| **B3** | `sidecar.rs` (port 9400) | **No stale-process cleanup.** If a previous app session left a sidecar running on port 9400, new instances repeatedly fail with `[Errno 48] address already in use` and hit the restart limit. The manager only kills its own child process, not leftover processes from previous sessions. |
+*(No critical bugs currently identified)*
 
 ### 11.2 High
 
@@ -716,7 +712,6 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 |---|---|---|
 | **B4** | `sidecar/main.py` DELETE + search | **Filter predicate injection.** All filter conditions use f-strings with unsanitized user input: `table.delete(f"source_file = '{source_file}'")`. A crafted value could inject arbitrary LanceDB predicates. |
 | **B5** | `db.rs` | **3 schema tables have no Rust CRUD functions.** `session_states`, `chat_messages`, `git_events` -- tables exist but are completely unimplemented. (`entity_links`, `tasks`, `app_config` now have full CRUD.) |
-| **B6** | `db.rs` `insert_terminal_command` | **Dead code.** Defined and tested but never called from any non-test code path. Terminal commands are parsed via OSC 633 and emitted as events but never persisted. |
 | **B7** | `chunking.py` TSX | **TSX falls through to word-window.** `"tsx"` is in `_CODE_LANGUAGES` and its grammar loads, but there's no entry in `_CODE_NODE_TYPES` for it. All TSX files get chunked as plain text. |
 
 ### 11.3 Medium
@@ -750,6 +745,15 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 | **B27** | `IndexingStatus.tsx` | No initial poll on mount -- if component mounts mid-indexing, won't know until next event. `getIndexingStatus()` exists for this but is never called. |
 | **B28** | `PaneContainer.tsx` | `onExit` prop not wired. Terminal process exit triggers no auto-close or visual indicator. |
 | **B29** | `sidecar/pyproject.toml` | `pytest-cov` is in main dependencies instead of dev group. |
+
+### 11.5 Resolved Issues
+
+| # | Location | Description | Status |
+|---|---|---|---|
+| **B1** | `pty.rs` | **PTY Writer issue**: `take_writer()` was called repeatedly. Fixed by storing the writer in `PtySession`. | RESOLVED |
+| **B2** | `main.rs` | **Production sidecar path**: Relative path failed in bundled apps. Fixed using Tauri's resource resolver. | RESOLVED |
+| **B3** | `sidecar.rs` | **Stale sidecar processes**: Port 9400 remained blocked on restart. Fixed with pre-launch port cleanup. | RESOLVED |
+| **B6** | `db.rs` | **Command Persistence**: Terminal commands weren't being saved. Wired `terminal:command-end` to SQLite. | RESOLVED |
 
 ---
 
@@ -792,12 +796,41 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 - Base64 binary transport through Tauri JSON events
 - ResizeObserver-based terminal resize with PTY size sync
 - Proper cleanup on unmount (unlisten events, dispose terminal, kill PTY)
+- **NL to Shell**: Integrated "ASK AI" UI for translating natural language to shell commands.
+- **Error Resolution**: "Ask Cortex to Fix" overlay for analyzing non-zero exit codes and suggesting fixes.
+- **Command Persistence**: Automatic logging of terminal commands, exit codes, and output to SQLite `terminal_commands`.
 
 ### Phase 4a: Editor Foundation -- DONE
 - CodeMirror 6 integration with language detection (Rust, Python, TypeScript, JavaScript, Markdown, JSON, YAML, HTML, CSS, SQL)
 - File read/write via Tauri IPC (`file_read`, `file_write` commands)
 - Auto-save with 1s debounce
 - EditorPanel component with file path input and status indicators
+- **File Tree Browser**: Functional sidebar for navigating the workspace with folder expansion and file icons.
+- **Fuzzy Finder**: `Cmd+P` overlay for quick file searching with path-aware fuzzy matching and directory context.
+- **Active File Sync**: File tree automatically highlights the currently active editor tab.
+
+### Phase 4b: LSP Integration -- DONE
+- **Backend LSP Manager**: Rust-based manager for spawning and communicating with language servers (pyright, rust-analyzer).
+- **JSON-RPC Bridge**: Bidirectional communication between CodeMirror 6 and language servers over Tauri IPC.
+- **Python Support**: Integrated `pyright-langserver` for diagnostics, hover, and autocomplete.
+- **Rust Support**: Integrated `rust-analyzer` for deep code intelligence.
+- **Lifecycle Management**: Language servers automatically start on file open and kill on tab close or app exit.
+
+### Phase 5d: Knowledge Graph Visualization -- DONE
+- **Global Graph UI**: Interactive D3.js force-directed graph visualization of the entire knowledge base.
+- **Node Simulation**: Real-time physics simulation for nodes (Notes, Tasks, Code, Files).
+- **Backend Infrastructure**: Optimized Rust commands for fetching the entire entity-link network.
+- **Navigation**: Toggleable full-screen overlay with zoom/drag support and shortcut `Cmd+G`.
+- **Legend**: Color-coded nodes by entity type for quick visual identification.
+- **Link Suggestion UI**: Suggested links (auto-generated) are rendered as dashed lines; clicking them opens a confirm/dismiss dialog.
+- **Interactive Triage**: Users can validate AI-generated relationships directly within the graph view.
+
+### Phase 6a: Background Agent Infrastructure -- DONE
+- **Python Agent Framework**: Pluggable `BackgroundAgent` and `AgentManager` system in the sidecar.
+- **Async Execution**: Support for periodic autonomous tasks running alongside the API.
+- **Research Daemon**: Integrated agent for monitoring ArXiv RSS/API for new papers matching user interests.
+- **Manual Trigger**: REST endpoint (`/api/v1/trigger`) to invoke agents on demand.
+- **Lifecycle Management**: Agents automatically start/stop with the sidecar process.
 
 ### Phase 5a: Notes & Entity Extraction -- DONE
 - Notes CRUD (create, read, update, delete) with SQLite-backed entities
@@ -830,6 +863,30 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 - Source type badges (N=note, C=code, T=terminal)
 - Inline task creation with Enter/Escape
 
+### Phase 8a: Remote API Server (Companion App Backend) -- DONE
+- Embedded Axum HTTP server in Tauri process
+- PIN-based device pairing with 6-digit challenge and lockout protection
+- Bearer token authentication for all subsequent requests
+- REST API for Notes, Tasks, Files, and Terminal management
+- **TLS Support**: Automatic self-signed certificate generation (HTTPS)
+- **mDNS Advertisement**: Automatic discovery via `_cortex._tcp.local`
+- WebSocket Terminal: Full bidirectional terminal streaming over WebSocket
+- Remote terminal creation and lifecycle management via Tauri AppHandle
+- Path traversal protection (all file access restricted to project root)
+
+### Phase 2: Session State & Handoff -- DONE
+- **LLM Integration**: Unified `/chat` and `/session/synthesis` endpoints in Python sidecar via `litellm`.
+- **Model Routing**: Support for local (Ollama) and cloud models with streaming support.
+- **Session Capture**: Rust infrastructure for gathering workspace signals (notes, tasks, git, branch).
+- **Auto-Capture**: Automatic session state capture on application exit.
+- **Persistence**: Full Rust CRUD for `session_states`, `chat_messages`, and `workspace_profiles`.
+- **Workspace Profiles**: Multiple profiles with independent watched directories and LLM settings.
+- **Synthesis**: Sidecar-based summarization of session signals into `summary`, `blockers`, and `next_steps`.
+- **Frontend Chat UI**: Functional chat panel with message history and session hydration.
+- **Context Awareness**: Assistant greets user with a summary of the previous session on app start.
+- **Profile Management UI**: Workspace switcher in the header for creating and switching between profiles.
+
+
 ### Test Coverage
 - 108 Rust tests passing
 - 199 Frontend tests passing (Vitest + jsdom)
@@ -842,12 +899,9 @@ WAL mode enabled, `synchronous=NORMAL`, `foreign_keys=ON`.
 
 Listed in rough priority order per the project roadmap:
 
-### Phase 3 Remaining: Terminal LLM Features
-- Natural language command translation (toggle mode, NL -> shell, confirmation panel)
-- Error resolution agent (non-zero exit + stderr -> LLM -> inline fix suggestions)
+### Phase 3 Remaining: Terminal Advanced
 - Pipeline monitoring (long-running process detection, metrics parsing, notifications)
 - stdout/stderr embedding in LanceDB for semantic search
-- Terminal command persistence to SQLite (write path exists but isn't wired)
 
 ### Phase 2: Session Handoff (the "killer feature")
 - litellm integration (Ollama connection, model routing, streaming SSE)
@@ -862,27 +916,22 @@ Listed in rough priority order per the project roadmap:
 - Historical session queries
 
 ### Phase 4 Remaining: Code Editor Advanced
-- File tree browser (Cmd+P fuzzy finder)
 - Multiple editor tabs in split panes
 - Git gutter (modified/added/deleted indicators)
-- LSP integration for Python (pyright/pylsp: autocomplete, hover, go-to-definition)
 - Editor <-> Terminal integration (click file paths, "Run file" Cmd+Enter)
 - Inline AI suggestions (ghost text)
 - Refactoring agent panel
 
-### Phase 5 Remaining: Knowledge Graph Advanced (5d+)
+### Phase 5 Remaining: Knowledge Graph Advanced
 - Temporal co-occurrence linking (entities active in same session)
-- Link suggestion UI (dashed suggested links for 0.70-0.85 confidence, confirm/dismiss)
 - Universal search (all entity types, all vector collections, hybrid keyword + vector)
 - Bidirectional links in editor (hover function -> see notes/tasks)
-- Graph visualization (interactive node/edge view with D3.js or similar)
 - Task lineage display (source note, related code, linked experiments on task card)
 
-### Phase 6: Background Agents & Polish
-- Research daemon (ArXiv RSS monitoring)
+### Phase 6 Remaining: Agent Polish & UI
 - Pipeline monitor agent (metric parsing, experiment tracking)
 - Digest agent (morning briefing: overdue tasks, stale branches, overnight results)
-- Webhook/REST API endpoints
+- Webhook/REST API endpoints for external context push
 - Model routing rules UI
 - Settings panel
 - Keyboard shortcut customization

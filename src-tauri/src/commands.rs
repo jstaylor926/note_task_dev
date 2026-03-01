@@ -103,39 +103,35 @@ pub async fn semantic_search(
     if let Some(ref ct) = chunk_type {
         params.push(("chunk_type", ct.clone()));
     }
-    if let Some(ref fpp) = file_path_prefix {
-        params.push(("file_path_prefix", fpp.clone()));
+    if let Some(ref fp) = file_path_prefix {
+        params.push(("file_path_prefix", fp.clone()));
     }
+    params.push(("git_branch", state.git_branch.clone()));
 
-    let resp = client
-        .get(&url)
+    let res = client
+        .get(url)
         .query(&params)
-        .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
-        .map_err(|e| format!("Search request failed: {}", e))?;
-
-    let body: serde_json::Value = resp
-        .json()
+        .map_err(|e| e.to_string())?
+        .json::<serde_json::Value>()
         .await
-        .map_err(|e| format!("Failed to parse search response: {}", e))?;
+        .map_err(|e| e.to_string())?;
 
-    let empty = vec![];
-    let results = body
-        .get("results")
-        .and_then(|v| v.as_array())
-        .unwrap_or(&empty)
+    let results = res["results"]
+        .as_array()
+        .unwrap_or(&vec![])
         .iter()
         .map(|r| SearchResult {
-            text: r.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            source_file: r.get("source_file").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-            chunk_index: r.get("chunk_index").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-            chunk_type: r.get("chunk_type").and_then(|v| v.as_str()).unwrap_or("text").to_string(),
-            entity_name: r.get("entity_name").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            language: r.get("language").and_then(|v| v.as_str()).unwrap_or("text").to_string(),
-            source_type: r.get("source_type").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-            relevance_score: r.get("relevance_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            created_at: r.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            text: r["text"].as_str().unwrap_or_default().to_string(),
+            source_file: r["source_file"].as_str().unwrap_or_default().to_string(),
+            chunk_index: r["chunk_index"].as_i64().unwrap_or(0) as i32,
+            chunk_type: r["chunk_type"].as_str().unwrap_or("text").to_string(),
+            entity_name: r["entity_name"].as_str().map(|s| s.to_string()),
+            language: r["language"].as_str().unwrap_or("text").to_string(),
+            source_type: r["source_type"].as_str().unwrap_or("unknown").to_string(),
+            relevance_score: r["relevance_score"].as_f64().unwrap_or(0.0),
+            created_at: r["created_at"].as_str().unwrap_or_default().to_string(),
         })
         .collect();
 
@@ -143,6 +139,210 @@ pub async fn semantic_search(
         results,
         query,
     })
+}
+
+// ─── Session & Handoff ───────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SessionStatePayload {
+    pub summary: String,
+    pub blockers: Vec<String>,
+    pub next_steps: Vec<String>,
+    pub focus: FocusContext,
+    pub raw_signals: serde_json::Value,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct FocusContext {
+    pub open_files: Vec<String>,
+    pub active_terminal_cwd: String,
+}
+
+#[tauri::command]
+pub async fn session_capture(
+    trigger: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    
+    // 1. Gather raw signals (Drop lock before await)
+    let (raw_signals, profile_id) = {
+        let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+        let profile_id = db::get_active_profile_id(&db_conn)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| "default".to_string());
+        
+        let recent_notes = db::list_notes(&db_conn, &profile_id)
+            .map_err(|e| e.to_string())?
+            .into_iter().take(5).collect::<Vec<_>>();
+        
+        let recent_tasks = db::list_tasks(&db_conn, &profile_id, None)
+            .map_err(|e| e.to_string())?
+            .into_iter().take(10).collect::<Vec<_>>();
+
+        let signals = serde_json::json!({
+            "recent_notes": recent_notes,
+            "recent_tasks": recent_tasks,
+            "git_branch": state.git_branch,
+            "project_root": state.project_root,
+        });
+        (signals, profile_id)
+    };
+
+    // 2. Synthesize via sidecar
+    let synthesis_url = format!("{}/api/v1/session/synthesis", state.sidecar_url);
+    let synthesis: serde_json::Value = client
+        .post(synthesis_url)
+        .json(&serde_json::json!({ "raw_signals": raw_signals }))
+        .send()
+        .await
+        .map_err(|e| format!("Synthesis failed: {}", e))?
+        .json()
+        .await
+        .map_err(|e| format!("Synthesis JSON failed: {}", e))?;
+
+    let payload = SessionStatePayload {
+        summary: synthesis["summary"].as_str().unwrap_or("No summary").to_string(),
+        blockers: synthesis["blockers"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        next_steps: synthesis["next_steps"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        focus: FocusContext {
+            open_files: vec![], // TODO: Get from frontend or store
+            active_terminal_cwd: state.project_root.clone(),
+        },
+        raw_signals,
+    };
+
+    let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    
+    // 3. Store in DB
+    let id = {
+        let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::create_session_state(&db_conn, &profile_id, &payload_json, &trigger, None)
+            .map_err(|e| e.to_string())?
+    };
+    
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn get_latest_session(state: tauri::State<'_, AppState>) -> Result<Option<db::SessionStateRow>, String> {
+    let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+    let profile_id = db::get_active_profile_id(&db_conn)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "default".to_string());
+    
+    db::get_latest_session_state(&db_conn, &profile_id).map_err(|e| e.to_string())
+}
+
+// ─── Chat ────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct ChatMessageInput {
+    pub role: String,
+    pub content: String,
+}
+
+#[tauri::command]
+pub async fn chat_send(
+    messages: Vec<ChatMessageInput>,
+    model: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/v1/chat", state.sidecar_url);
+    
+    // 1. Save user message to DB (Drop lock before await)
+    let profile_id = {
+        let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+        let profile_id = db::get_active_profile_id(&db_conn)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| "default".to_string());
+
+        if let Some(last_msg) = messages.last() {
+            if last_msg.role == "user" {
+                let _ = db::create_chat_message(&db_conn, &profile_id, None, "user", &last_msg.content, model.as_deref());
+            }
+        }
+        profile_id
+    };
+
+    // 2. Call sidecar
+    let res = client
+        .post(url)
+        .json(&serde_json::json!({
+            "messages": messages,
+            "model": model.unwrap_or_else(|| "ollama/llama3".to_string()),
+            "stream": false
+        }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 3. Save assistant response to DB
+    if let Some(content) = res["choices"][0]["message"]["content"].as_str() {
+        let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+        let _ = db::create_chat_message(&db_conn, &profile_id, None, "assistant", content, None);
+    }
+
+    Ok(res)
+}
+
+// ─── Workspace Profiles ──────────────────────────────────────────────
+
+#[tauri::command]
+pub fn profile_list(state: tauri::State<'_, AppState>) -> Result<Vec<db::WorkspaceProfileRow>, String> {
+    let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::list_workspace_profiles(&db_conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn profile_create(
+    name: String,
+    watched_directories: String,
+    default_model: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<db::WorkspaceProfileRow, String> {
+    let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::create_workspace_profile(&db_conn, &name, &watched_directories, default_model.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn profile_activate(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::activate_workspace_profile(&db_conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn profile_update(
+    id: String,
+    name: String,
+    watched_directories: String,
+    default_model: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::update_workspace_profile(&db_conn, &id, &name, &watched_directories, default_model.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn profile_delete(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::delete_workspace_profile(&db_conn, &id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -242,22 +442,30 @@ pub async fn universal_search(
     let limit = limit.unwrap_or(20);
     let sidecar_url = state.sidecar_url.clone();
 
-    // Entity search (scoped lock, dropped before any .await)
-    let entity_results = {
+    // 1. Keyword search via FTS5 (parallelizable if we had multiple connections, but scoped for now)
+    let (fts_results, profile_id) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let profile_id = db::get_active_profile_id(&db)
             .map_err(|e| e.to_string())?
             .unwrap_or_else(|| "default".to_string());
-        db::search_entities(&db, &query, None, &profile_id, limit)
-            .map_err(|e| e.to_string())?
+        
+        // Try FTS search first
+        let results = db::search_entities_fts(&db, &query, None, &profile_id, limit)
+            .unwrap_or_default();
+        
+        (results, profile_id)
     };
 
-    // Vector search via sidecar
+    // 2. Vector search via sidecar
     let client = reqwest::Client::new();
     let url = format!("{}/search", sidecar_url);
     let code_results: Vec<serde_json::Value> = match client
         .get(&url)
-        .query(&[("query", query.as_str()), ("limit", &limit.to_string())])
+        .query(&[
+            ("query", query.as_str()),
+            ("limit", &limit.to_string()),
+            ("git_branch", &state.git_branch),
+        ])
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
@@ -272,44 +480,51 @@ pub async fn universal_search(
         Err(_) => vec![],
     };
 
-    // Map code results to UniversalSearchResult
-    let code_count = code_results.len();
-    let mut merged: Vec<UniversalSearchResult> = code_results
-        .iter()
-        .map(|r| {
-            let chunk_type = r.get("chunk_type").and_then(|v| v.as_str()).unwrap_or("code");
-            let result_type = if chunk_type == "function" || chunk_type == "class" || chunk_type == "struct" {
-                chunk_type.to_string()
-            } else {
-                "code".to_string()
-            };
-            UniversalSearchResult {
-                id: r.get("source_file").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                result_type,
-                title: r.get("entity_name")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| r.get("source_file").and_then(|v| v.as_str()))
-                    .unwrap_or("unknown")
-                    .to_string(),
-                snippet: r.get("text").and_then(|v| v.as_str()).map(|s| {
-                    if s.len() > 200 { format!("{}...", &s[..200]) } else { s.to_string() }
-                }),
-                source_file: r.get("source_file").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                relevance_score: r.get("relevance_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                metadata: None,
-            }
-        })
-        .collect();
+    let mut merged: Vec<UniversalSearchResult> = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
 
-    // Map entity results to UniversalSearchResult with computed scores
-    let entity_count = entity_results.len();
-    for entity in &entity_results {
+    // Map code results (Vector)
+    let code_count = code_results.len();
+    for r in &code_results {
+        let source_file = r.get("source_file").and_then(|v| v.as_str()).unwrap_or("");
+        let chunk_type = r.get("chunk_type").and_then(|v| v.as_str()).unwrap_or("code");
+        let result_type = if chunk_type == "function" || chunk_type == "class" || chunk_type == "struct" {
+            chunk_type.to_string()
+        } else {
+            "code".to_string()
+        };
+        let id = source_file.to_string();
+        seen_ids.insert(id.clone());
+
+        merged.push(UniversalSearchResult {
+            id,
+            result_type,
+            title: r.get("entity_name")
+                .and_then(|v| v.as_str())
+                .or_else(|| r.get("source_file").and_then(|v| v.as_str()))
+                .unwrap_or("unknown")
+                .to_string(),
+            snippet: r.get("text").and_then(|v| v.as_str()).map(|s| {
+                if s.len() > 200 { format!("{}...", &s[..200]) } else { s.to_string() }
+            }),
+            source_file: Some(source_file.to_string()),
+            relevance_score: r.get("relevance_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            metadata: None,
+        });
+    }
+
+    // Map entity results (FTS5)
+    let entity_count = fts_results.len();
+    for entity in &fts_results {
+        if seen_ids.contains(&entity.id) { continue; }
+        
         let score = compute_entity_score(
             &entity.title,
             entity.content.as_deref(),
             &query,
             &entity.updated_at,
         );
+        
         merged.push(UniversalSearchResult {
             id: entity.id.clone(),
             result_type: entity.entity_type.clone(),
@@ -333,6 +548,100 @@ pub async fn universal_search(
         code_count,
         entity_count,
     })
+}
+
+// ─── Intelligent Terminal ───────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TerminalTranslateResponse {
+    pub command: String,
+    pub explanation: String,
+    pub confidence: f64,
+}
+
+#[tauri::command]
+pub async fn terminal_translate(
+    query: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<TerminalTranslateResponse, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/v1/terminal/translate", state.sidecar_url);
+
+    let res = client
+        .post(url)
+        .json(&serde_json::json!({
+            "query": query,
+            "context": {
+                "project_root": state.project_root,
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json::<TerminalTranslateResponse>()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(res)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TerminalResolveResponse {
+    pub analysis: String,
+    pub suggestion: String,
+    pub explanation: String,
+}
+
+#[tauri::command]
+pub async fn terminal_resolve(
+    command: String,
+    exit_code: i32,
+    output: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<TerminalResolveResponse, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/v1/terminal/resolve", state.sidecar_url);
+
+    let res = client
+        .post(url)
+        .json(&serde_json::json!({
+            "command": command,
+            "exit_code": exit_code,
+            "output": output,
+        }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json::<TerminalResolveResponse>()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn terminal_command_persist(
+    command: String,
+    cwd: Option<String>,
+    exit_code: Option<i32>,
+    duration_ms: Option<u64>,
+    output: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+    let profile_id = db::get_active_profile_id(&db_conn)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "default".to_string());
+
+    db::insert_terminal_command(
+        &db_conn,
+        &profile_id,
+        &command,
+        cwd.as_deref(),
+        exit_code,
+        duration_ms,
+        output.as_deref(),
+    ).map_err(|e| e.to_string())
 }
 
 // ─── Remote Access Management ─────────────────────────────────────────
@@ -433,6 +742,39 @@ pub fn revoke_paired_device(
     db::revoke_paired_device(&conn, &device_id)
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn device_delete(
+    device_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::delete_paired_device(&conn, &device_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn session_history_list(
+    limit: Option<usize>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<db::SessionStateRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let profile_id = db::get_active_profile_id(&conn)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "default".to_string());
+    db::list_session_history(&conn, &profile_id, limit.unwrap_or(20)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn chat_history_list(
+    limit: Option<usize>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<db::ChatMessageRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let profile_id = db::get_active_profile_id(&conn)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "default".to_string());
+    db::list_chat_history(&conn, &profile_id, limit.unwrap_or(50)).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -13,6 +13,8 @@ mod osc_parser;
 mod shell_hooks;
 mod file_commands;
 mod entity_commands;
+mod lsp;
+mod lsp_commands;
 mod remote_auth;
 mod remote_server;
 
@@ -46,6 +48,7 @@ pub struct AppState {
     pub indexing: Mutex<IndexingState>,
     pub git_branch: String,
     pub pty_manager: Mutex<pty::PtyManager>,
+    pub lsp_manager: lsp::LspManager,
     pub shell_hooks_dir: Option<std::path::PathBuf>,
     pub project_root: String,
 }
@@ -143,9 +146,11 @@ fn main() {
                 indexing: Mutex::new(IndexingState::new()),
                 git_branch,
                 pty_manager: Mutex::new(pty::PtyManager::new()),
+                lsp_manager: lsp::LspManager::new(),
                 shell_hooks_dir,
                 project_root: project_root.to_string_lossy().to_string(),
             };
+
             app.manage(state);
             let shell_hooks_dir = shell_hooks_dir_clone;
 
@@ -206,7 +211,7 @@ fn main() {
                 sidecar_url.clone(),
             ));
             tauri::async_runtime::spawn(watcher::start_watcher(
-                app_handle,
+                app_handle.clone(),
                 project_root.clone(),
             ));
 
@@ -236,6 +241,7 @@ fn main() {
 
                 let remote_state = remote_auth::RemoteAppState {
                     db: Arc::new(Mutex::new(remote_db)),
+                    app_handle: app_handle.clone(),
                     sidecar_url: sidecar_url.clone(),
                     project_root: project_root.to_string_lossy().to_string(),
                     pairing: remote_auth::PairingState::new(),
@@ -243,8 +249,9 @@ fn main() {
                     shell_hooks_dir: shell_hooks_dir.clone(),
                 };
 
+                let certs_dir = app_data_dir.join("remote_certs");
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = remote_server::start_server(remote_state, remote_port).await {
+                    if let Err(e) = remote_server::start_server(remote_state, remote_port, certs_dir).await {
                         log::error!("Remote API server failed: {}", e);
                     }
                 });
@@ -288,27 +295,57 @@ fn main() {
             entity_commands::note_auto_link,
             entity_commands::entity_link_confirm,
             entity_commands::entity_links_with_details,
+            entity_commands::get_all_entities,
+            entity_commands::get_all_links,
             entity_commands::extract_tasks_from_terminal,
-            entity_commands::entity_search,
             entity_commands::list_suggested_links,
             entity_commands::count_suggested_links,
             entity_commands::task_lineage_batch,
+            entity_commands::entity_search,
             commands::get_remote_access_status,
             commands::set_remote_access_enabled,
             commands::set_remote_access_port,
             commands::list_paired_devices,
             commands::revoke_paired_device,
+            commands::device_delete,
+            commands::session_capture,
+            commands::get_latest_session,
+            commands::session_history_list,
+            commands::chat_history_list,
+            commands::chat_send,
+            commands::profile_list,
+            commands::profile_create,
+            commands::profile_activate,
+            commands::profile_update,
+            commands::profile_delete,
+            commands::terminal_translate,
+            commands::terminal_resolve,
+            commands::terminal_command_persist,
+            lsp_commands::lsp_spawn,
+            lsp_commands::lsp_send,
         ])
         .build(tauri::generate_context!())
         .expect("error building cortex")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                log::info!("Application exiting, stopping sidecar and PTY sessions...");
+                log::info!("Application exiting, capturing session state...");
                 let state = app.state::<AppState>();
+                
+                // Trigger auto-capture on exit
+                let app_handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>();
+                    if let Err(e) = crate::commands::session_capture("exit".to_string(), state).await {
+                        log::error!("Auto-capture on exit failed: {}", e);
+                    }
+                });
+
+                log::info!("Stopping sidecar, PTY, and LSP sessions...");
                 let mut manager = state.sidecar_manager.lock().unwrap();
                 manager.stop();
                 let mut pty_mgr = state.pty_manager.lock().unwrap();
                 pty_mgr.kill_all();
+                state.lsp_manager.kill_all();
             }
         });
 }

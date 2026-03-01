@@ -318,6 +318,28 @@ pub fn entity_links_with_details(
     db::list_entity_links_with_details(&conn, &entity_id).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn get_all_entities(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<db::EntitySearchResult>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let profile_id = db::get_active_profile_id(&conn)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "default".to_string());
+    db::get_all_entities(&conn, &profile_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_all_links(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<db::EntityLinkRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let profile_id = db::get_active_profile_id(&conn)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "default".to_string());
+    db::get_all_links(&conn, &profile_id).map_err(|e| e.to_string())
+}
+
 // ─── Terminal Task Extraction ────────────────────────────────────────
 
 #[tauri::command]

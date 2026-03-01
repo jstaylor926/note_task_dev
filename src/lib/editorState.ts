@@ -8,14 +8,24 @@ export interface EditorFile {
   language: string | undefined;
 }
 
-export interface EditorTab {
-  id: string;
-  file: EditorFile;
-}
+export type EditorPaneNode =
+  | { 
+      type: 'pane'; 
+      id: string; 
+      tabs: EditorFile[]; 
+      activeTabIndex: number; 
+    }
+  | {
+      type: 'split';
+      id: string;
+      direction: 'horizontal' | 'vertical';
+      children: EditorPaneNode[];
+      sizes: number[];
+    };
 
 interface EditorState {
-  tabs: EditorTab[];
-  activeTabIndex: number;
+  layout: EditorPaneNode;
+  activePaneId: string | null;
   isLoading: boolean;
   error: string | null;
 }
@@ -32,30 +42,47 @@ export function resetIdCounter() {
 }
 
 export function createEditorStore() {
-  const [state, setState] = createStore<EditorState>({
+  const initialPane: EditorPaneNode = {
+    type: 'pane',
+    id: genId('pane'),
     tabs: [],
     activeTabIndex: 0,
+  };
+
+  const [state, setState] = createStore<EditorState>({
+    layout: initialPane,
+    activePaneId: initialPane.id,
     isLoading: false,
     error: null,
   });
 
   function openFile(path: string, content: string) {
-    const existing = findTabByPath(path);
-    if (existing !== -1) {
-      setActiveTab(existing);
+    // Check if file is already open in ANY pane
+    const existing = findTabInLayout(state.layout, path);
+    if (existing) {
+      setActivePane(existing.paneId);
+      setTabInPane(existing.paneId, existing.tabIndex);
       return;
     }
 
     const language = getLanguageFromPath(path);
-    const tab: EditorTab = {
-      id: genId('tab'),
-      file: { path, content, savedContent: content, language },
-    };
+    const file: EditorFile = { path, content, savedContent: content, language };
 
     setState(
       produce((s) => {
-        s.tabs.push(tab);
-        s.activeTabIndex = s.tabs.length - 1;
+        const pane = findPaneByIdMut(s.layout, s.activePaneId || '');
+        if (pane && pane.type === 'pane') {
+          pane.tabs.push(file);
+          pane.activeTabIndex = pane.tabs.length - 1;
+        } else {
+          // Fallback: if no active pane, or it's a split (shouldn't happen), add to first pane found
+          const firstPane = getFirstPaneMut(s.layout);
+          if (firstPane) {
+            firstPane.tabs.push(file);
+            firstPane.activeTabIndex = firstPane.tabs.length - 1;
+            s.activePaneId = firstPane.id;
+          }
+        }
         s.isLoading = false;
         s.error = null;
       }),
@@ -78,9 +105,12 @@ export function createEditorStore() {
   function updateContent(content: string) {
     setState(
       produce((s) => {
-        const tab = s.tabs[s.activeTabIndex];
-        if (tab) {
-          tab.file.content = content;
+        const pane = findPaneByIdMut(s.layout, s.activePaneId || '');
+        if (pane && pane.type === 'pane') {
+          const file = pane.tabs[pane.activeTabIndex];
+          if (file) {
+            file.content = content;
+          }
         }
       }),
     );
@@ -89,67 +119,129 @@ export function createEditorStore() {
   function markSaved() {
     setState(
       produce((s) => {
-        const tab = s.tabs[s.activeTabIndex];
-        if (tab) {
-          tab.file.savedContent = tab.file.content;
+        const pane = findPaneByIdMut(s.layout, s.activePaneId || '');
+        if (pane && pane.type === 'pane') {
+          const file = pane.tabs[pane.activeTabIndex];
+          if (file) {
+            file.savedContent = file.content;
+          }
         }
       }),
     );
   }
 
-  function closeTab(tabId: string) {
+  function closeTab(paneId: string, tabIndex: number) {
     setState(
       produce((s) => {
-        const idx = s.tabs.findIndex((t) => t.id === tabId);
-        if (idx === -1) return;
-        s.tabs.splice(idx, 1);
-        if (s.tabs.length === 0) {
-          s.activeTabIndex = 0;
-        } else if (s.activeTabIndex >= s.tabs.length) {
-          s.activeTabIndex = s.tabs.length - 1;
+        const pane = findPaneByIdMut(s.layout, paneId);
+        if (!pane || pane.type !== 'pane') return;
+
+        pane.tabs.splice(tabIndex, 1);
+        if (pane.tabs.length === 0) {
+          // If it's not the last pane, we might want to remove it
+          // but for now, let's just keep empty panes
+          pane.activeTabIndex = 0;
+        } else if (pane.activeTabIndex >= pane.tabs.length) {
+          pane.activeTabIndex = pane.tabs.length - 1;
         }
         s.error = null;
       }),
     );
   }
 
-  function closeFile() {
-    const tab = state.tabs[state.activeTabIndex];
-    if (tab) {
-      closeTab(tab.id);
+  function closeActiveFile() {
+    if (state.activePaneId) {
+      const pane = findPaneById(state.layout, state.activePaneId);
+      if (pane && pane.type === 'pane') {
+        closeTab(pane.id, pane.activeTabIndex);
+      }
     }
   }
 
-  function setActiveTab(index: number) {
-    if (index >= 0 && index < state.tabs.length) {
-      setState('activeTabIndex', index);
-    }
+  function setActivePane(paneId: string) {
+    setState('activePaneId', paneId);
   }
 
-  function findTabByPath(path: string): number {
-    return state.tabs.findIndex((t) => t.file.path === path);
+  function setTabInPane(paneId: string, tabIndex: number) {
+    setState(
+      produce((s) => {
+        const pane = findPaneByIdMut(s.layout, paneId);
+        if (pane && pane.type === 'pane') {
+          if (tabIndex >= 0 && tabIndex < pane.tabs.length) {
+            pane.activeTabIndex = tabIndex;
+          }
+        }
+      })
+    );
   }
 
-  function isDirty(tabIndex?: number): boolean {
-    const idx = tabIndex ?? state.activeTabIndex;
-    const tab = state.tabs[idx];
+  function splitPane(paneId: string, direction: 'horizontal' | 'vertical') {
+    setState(
+      produce((s) => {
+        const pane = findPaneByIdMut(s.layout, paneId);
+        if (!pane || pane.type !== 'pane') return;
+
+        // Create a new pane with a copy of the active tab
+        const activeFile = pane.tabs[pane.activeTabIndex];
+        const newPane: EditorPaneNode = {
+          type: 'pane',
+          id: genId('pane'),
+          tabs: activeFile ? [{ ...activeFile }] : [],
+          activeTabIndex: 0,
+        };
+
+        s.layout = splitNodeInLayout(s.layout, paneId, direction, newPane);
+        s.activePaneId = newPane.id;
+      })
+    );
+  }
+
+  function closePane(paneId: string) {
+    setState(
+      produce((s) => {
+        // Don't close the last pane
+        if (s.layout.type === 'pane' && s.layout.id === paneId) return;
+
+        s.layout = removeNodeFromLayout(s.layout, paneId);
+        // Ensure activePaneId is still valid
+        const activePane = findPaneById(s.layout, s.activePaneId || '');
+        if (!activePane) {
+          const first = getFirstPane(s.layout);
+          s.activePaneId = first ? first.id : null;
+        }
+      })
+    );
+  }
+
+  function resizeSplit(splitId: string, sizes: number[]) {
+    setState(
+      produce((s) => {
+        updateSplitSize(s.layout, splitId, sizes);
+      })
+    );
+  }
+
+  function isDirty(paneId: string, tabIndex: number): boolean {
+    const pane = findPaneById(state.layout, paneId);
+    if (!pane || pane.type !== 'pane') return false;
+    const tab = pane.tabs[tabIndex];
     if (!tab) return false;
-    return tab.file.content !== tab.file.savedContent;
+    return tab.content !== tab.savedContent;
   }
 
   function isAnyDirty(): boolean {
-    return state.tabs.some((t) => t.file.content !== t.file.savedContent);
-  }
-
-  function isLargeFile(): boolean {
-    const tab = state.tabs[state.activeTabIndex];
-    if (!tab) return false;
-    const lineCount = tab.file.content.split('\n').length;
-    return lineCount > LARGE_FILE_LINE_THRESHOLD;
+    return anyInLayout(state.layout, (pane) => 
+      pane.type === 'pane' && pane.tabs.some(t => t.content !== t.savedContent)
+    );
   }
 
   function getActiveFile(): EditorFile | null {
-    return state.tabs[state.activeTabIndex]?.file ?? null;
+    if (!state.activePaneId) return null;
+    const pane = findPaneById(state.layout, state.activePaneId);
+    if (pane && pane.type === 'pane') {
+      return pane.tabs[pane.activeTabIndex] || null;
+    }
+    return null;
   }
 
   return {
@@ -160,12 +252,136 @@ export function createEditorStore() {
     updateContent,
     markSaved,
     closeTab,
-    closeFile,
-    setActiveTab,
-    findTabByPath,
+    closeActiveFile,
+    setActivePane,
+    setTabInPane,
+    splitPane,
+    closePane,
+    resizeSplit,
+    getActiveFile,
     isDirty,
     isAnyDirty,
-    isLargeFile,
-    getActiveFile,
   };
 }
+
+// ─── Helper Functions ───────────────────────────────────────────────
+
+function updateSplitSize(node: EditorPaneNode, splitId: string, sizes: number[]) {
+  if (node.type === 'split') {
+    if (node.id === splitId) {
+      node.sizes = sizes;
+      return;
+    }
+    for (const child of node.children) {
+      updateSplitSize(child, splitId, sizes);
+    }
+  }
+}
+
+function findTabInLayout(node: EditorPaneNode, path: string): { paneId: string, tabIndex: number } | null {
+  if (node.type === 'pane') {
+    const idx = node.tabs.findIndex(t => t.path === path);
+    if (idx !== -1) return { paneId: node.id, tabIndex: idx };
+    return null;
+  }
+  for (const child of node.children) {
+    const found = findTabInLayout(child, path);
+    if (found) return found;
+  }
+  return null;
+}
+
+function findPaneById(node: EditorPaneNode, id: string): EditorPaneNode | null {
+  if (node.id === id) return node;
+  if (node.type === 'split') {
+    for (const child of node.children) {
+      const found = findPaneById(child, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findPaneByIdMut(node: EditorPaneNode, id: string): EditorPaneNode | null {
+  if (node.id === id) return node;
+  if (node.type === 'split') {
+    for (const child of node.children) {
+      const found = findPaneByIdMut(child, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function getFirstPane(node: EditorPaneNode): { type: 'pane', id: string } | null {
+  if (node.type === 'pane') return node;
+  if (node.children.length > 0) return getFirstPane(node.children[0]);
+  return null;
+}
+
+function getFirstPaneMut(node: any): any {
+  if (node.type === 'pane') return node;
+  if (node.children && node.children.length > 0) return getFirstPaneMut(node.children[0]);
+  return null;
+}
+
+function anyInLayout(node: EditorPaneNode, predicate: (n: EditorPaneNode) => boolean): boolean {
+  if (predicate(node)) return true;
+  if (node.type === 'split') {
+    return node.children.some(child => anyInLayout(child, predicate));
+  }
+  return false;
+}
+
+function splitNodeInLayout(
+  node: EditorPaneNode,
+  targetId: string,
+  direction: 'horizontal' | 'vertical',
+  newNode: EditorPaneNode,
+): EditorPaneNode {
+  if (node.type === 'pane') {
+    if (node.id === targetId) {
+      return {
+        type: 'split',
+        id: genId('split'),
+        direction,
+        children: [node, newNode],
+        sizes: [50, 50],
+      };
+    }
+    return node;
+  }
+
+  return {
+    ...node,
+    children: node.children.map((child) =>
+      splitNodeInLayout(child, targetId, direction, newNode),
+    ),
+  };
+}
+
+function removeNodeFromLayout(node: EditorPaneNode, targetId: string): EditorPaneNode {
+  if (node.type === 'pane') return node;
+
+  const filtered = node.children.filter((child) => {
+    if (child.type === 'pane') return child.id !== targetId;
+    return true;
+  });
+
+  const recursed = filtered.map((child) => removeNodeFromLayout(child, targetId));
+
+  if (recursed.length === 0) {
+    // This shouldn't happen with our logic, but handle it
+    return node;
+  }
+
+  if (recursed.length === 1) return recursed[0];
+
+  const equalSize = 100 / recursed.length;
+  return {
+    ...node,
+    children: recursed,
+    sizes: recursed.map(() => equalSize),
+  };
+}
+

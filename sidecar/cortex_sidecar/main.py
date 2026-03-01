@@ -12,12 +12,18 @@ from fastapi import FastAPI
 
 from cortex_sidecar.chunking import chunk_file, chunk_text
 from cortex_sidecar.routes.health import router as health_router
+from cortex_sidecar.routes.chat import router as chat_router
+from cortex_sidecar.agents.base import AgentManager
+from cortex_sidecar.agents.research_daemon import ResearchDaemon
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 logger = logging.getLogger("cortex-sidecar")
+
+# Global agent manager
+agent_manager = AgentManager()
 
 
 def get_lancedb_schema() -> pa.Schema:
@@ -133,13 +139,19 @@ async def lifespan(app: FastAPI):
         logger.info("Loading sentence-transformer model...")
         app.state.model = SentenceTransformer("all-MiniLM-L6-v2")
 
+    # Register and start agents
+    agent_manager.register_agent(ResearchDaemon())
+    await agent_manager.start_all()
+
     logger.info("Sidecar ready")
     yield
 
+    await agent_manager.stop_all()
     logger.info("Sidecar shutting down")
 
 app = FastAPI(title="Cortex Sidecar", version="0.1.0", lifespan=lifespan)
 app.include_router(health_router)
+app.include_router(chat_router)
 
 @app.post("/embed")
 async def embed_text(req: EmbedRequest):
@@ -201,7 +213,7 @@ async def ingest_file(req: IngestRequest):
         HTTPException: If ingestion fails.
     """
     try:
-        chunks = chunk_file(req.content, req.language, file_path=req.file_path)
+        chunks = chunk_file(req.content, req.language, file_path=req.file_path, source_type=req.source_type)
         if not chunks:
             return {"chunk_count": 0, "entities": []}
 
@@ -292,6 +304,7 @@ async def search_embeddings(
     source_type: Optional[str] = None,
     chunk_type: Optional[str] = None,
     file_path_prefix: Optional[str] = None,
+    git_branch: Optional[str] = None,
 ):
     """Search for similar embeddings in LanceDB.
 
@@ -302,6 +315,7 @@ async def search_embeddings(
         source_type: Filter by source type (code, docs, etc.).
         chunk_type: Filter by chunk type (function, class, etc.).
         file_path_prefix: Filter by file path prefix.
+        git_branch: Filter by git branch.
 
     Returns:
         A dictionary with search results and the original query.
@@ -325,6 +339,8 @@ async def search_embeddings(
             conditions.append(f"source_type = '{source_type}'")
         if chunk_type:
             conditions.append(f"chunk_type = '{chunk_type}'")
+        if git_branch:
+            conditions.append(f"git_branch = '{git_branch}'")
         if file_path_prefix:
             conditions.append(f"source_file LIKE '{file_path_prefix}%'")
 
