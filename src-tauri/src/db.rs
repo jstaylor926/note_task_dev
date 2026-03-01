@@ -206,6 +206,19 @@ CREATE TABLE IF NOT EXISTS app_config (
     value TEXT NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS paired_devices (
+    id TEXT PRIMARY KEY,
+    device_name TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    platform TEXT,
+    last_seen_at TIMESTAMP,
+    paired_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    revoked INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_paired_devices_token ON paired_devices(token_hash);
+CREATE INDEX IF NOT EXISTS idx_paired_devices_revoked ON paired_devices(revoked);
 "#;
 
 pub fn initialize(db_path: &Path) -> Result<Connection> {
@@ -930,6 +943,105 @@ pub fn get_task_lineages(conn: &Connection, task_ids: &[String]) -> Result<Vec<T
         })
     })?;
     rows.collect()
+}
+
+// ─── Paired Devices (Remote API) ─────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PairedDeviceRow {
+    pub id: String,
+    pub device_name: String,
+    pub platform: Option<String>,
+    pub last_seen_at: Option<String>,
+    pub paired_at: String,
+    pub revoked: bool,
+}
+
+pub fn insert_paired_device(
+    conn: &Connection,
+    device_id: &str,
+    device_name: &str,
+    token_hash: &str,
+    platform: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO paired_devices (id, device_name, token_hash, platform) VALUES (?1, ?2, ?3, ?4)",
+        params![device_id, device_name, token_hash, platform],
+    )?;
+    Ok(())
+}
+
+pub fn validate_device_token(conn: &Connection, token_hash: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM paired_devices WHERE token_hash = ?1 AND revoked = 0",
+    )?;
+    let mut rows = stmt.query(params![token_hash])?;
+    match rows.next()? {
+        Some(row) => {
+            let device_id: String = row.get(0)?;
+            // Update last_seen_at
+            conn.execute(
+                "UPDATE paired_devices SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                params![device_id],
+            )?;
+            Ok(Some(device_id))
+        }
+        None => Ok(None),
+    }
+}
+
+pub fn list_paired_devices(conn: &Connection) -> Result<Vec<PairedDeviceRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, device_name, platform, last_seen_at, paired_at, revoked
+         FROM paired_devices ORDER BY paired_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(PairedDeviceRow {
+            id: row.get(0)?,
+            device_name: row.get(1)?,
+            platform: row.get(2)?,
+            last_seen_at: row.get(3)?,
+            paired_at: row.get(4)?,
+            revoked: row.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn revoke_paired_device(conn: &Connection, device_id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "UPDATE paired_devices SET revoked = 1 WHERE id = ?1",
+        params![device_id],
+    )?;
+    Ok(affected > 0)
+}
+
+pub fn delete_paired_device(conn: &Connection, device_id: &str) -> Result<bool> {
+    let affected = conn.execute(
+        "DELETE FROM paired_devices WHERE id = ?1",
+        params![device_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// Get a config value from app_config
+pub fn get_app_config(conn: &Connection, key: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT value FROM app_config WHERE key = ?1")?;
+    let mut rows = stmt.query(params![key])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(row.get(0)?)),
+        None => Ok(None),
+    }
+}
+
+/// Set a config value in app_config (upsert)
+pub fn set_app_config(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO app_config (key, value, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+        params![key, value],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

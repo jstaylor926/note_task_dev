@@ -19,6 +19,15 @@ sha2 = "0.10"
 ignore = "0.4"
 portable-pty = "0.8"
 base64 = "0.22"
+# Remote API server (Phase 8: Mobile Companion)
+axum = { version = "0.7", features = ["ws"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+tokio-tungstenite = "0.24"
+rand = "0.8"
+hex = "0.4"
+chrono = "0.4"
+futures-util = "0.3"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

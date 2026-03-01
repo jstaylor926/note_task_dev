@@ -13,8 +13,10 @@ mod osc_parser;
 mod shell_hooks;
 mod file_commands;
 mod entity_commands;
+mod remote_auth;
+mod remote_server;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{Manager, Listener};
 
 pub struct IndexingState {
@@ -93,10 +95,10 @@ fn main() {
                 let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
                 manifest_dir.parent().unwrap().join("sidecar")
             } else {
-                // In production, the sidecar would be bundled alongside the app
-                // For now, fall back to the same dev path
-                let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-                manifest_dir.parent().unwrap().join("sidecar")
+                // In production, the sidecar would be bundled alongside the app as a resource
+                app.path()
+                    .resolve("sidecar", tauri::path::BaseDirectory::Resource)
+                    .expect("failed to resolve production sidecar path")
             };
 
             log::info!("Sidecar directory: {:?}", sidecar_dir);
@@ -133,6 +135,7 @@ fn main() {
             };
 
             // 7. Store shared state
+            let shell_hooks_dir_clone = shell_hooks_dir.clone();
             let state = AppState {
                 db: Mutex::new(conn),
                 sidecar_manager: Mutex::new(sidecar_manager),
@@ -144,6 +147,7 @@ fn main() {
                 project_root: project_root.to_string_lossy().to_string(),
             };
             app.manage(state);
+            let shell_hooks_dir = shell_hooks_dir_clone;
 
             let app_handle_for_events = app.handle().clone();
             app.listen(events::TERMINAL_COMMAND_END, move |event| {
@@ -195,16 +199,60 @@ fn main() {
                 }
             });
 
-            // 7. Start background health monitor
+            // 8. Start background health monitor
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(sidecar::health_monitor_loop(
                 app_handle.clone(),
-                sidecar_url,
+                sidecar_url.clone(),
             ));
             tauri::async_runtime::spawn(watcher::start_watcher(
                 app_handle,
-                project_root,
+                project_root.clone(),
             ));
+
+            // 9. Start Remote API server (if enabled)
+            // Check app_config for remote_access_enabled; default to false
+            let app_state = app.state::<AppState>();
+            let remote_enabled = {
+                let conn_check = app_state.db.lock().unwrap();
+                db::get_app_config(&conn_check, "remote_access_enabled")
+                    .unwrap_or(None)
+                    .map(|v| v == "true")
+                    .unwrap_or(false)
+            };
+
+            if remote_enabled {
+                let remote_port: u16 = {
+                    let conn_check = app_state.db.lock().unwrap();
+                    db::get_app_config(&conn_check, "remote_api_port")
+                        .unwrap_or(None)
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(9401)
+                };
+
+                // Open a second DB connection for the remote server (SQLite WAL supports this)
+                let remote_db = db::initialize(&db_path)
+                    .expect("failed to open second DB connection for remote server");
+
+                let remote_state = remote_auth::RemoteAppState {
+                    db: Arc::new(Mutex::new(remote_db)),
+                    sidecar_url: sidecar_url.clone(),
+                    project_root: project_root.to_string_lossy().to_string(),
+                    pairing: remote_auth::PairingState::new(),
+                    pty_manager: Arc::new(Mutex::new(pty::PtyManager::new())),
+                    shell_hooks_dir: shell_hooks_dir.clone(),
+                };
+
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = remote_server::start_server(remote_state, remote_port).await {
+                        log::error!("Remote API server failed: {}", e);
+                    }
+                });
+
+                log::info!("Remote API server started on port {}", remote_port);
+            } else {
+                log::info!("Remote API server disabled (set remote_access_enabled=true in app_config to enable)");
+            }
 
             Ok(())
         })
@@ -245,6 +293,11 @@ fn main() {
             entity_commands::list_suggested_links,
             entity_commands::count_suggested_links,
             entity_commands::task_lineage_batch,
+            commands::get_remote_access_status,
+            commands::set_remote_access_enabled,
+            commands::set_remote_access_port,
+            commands::list_paired_devices,
+            commands::revoke_paired_device,
         ])
         .build(tauri::generate_context!())
         .expect("error building cortex")

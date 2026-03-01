@@ -335,6 +335,106 @@ pub async fn universal_search(
     })
 }
 
+// ─── Remote Access Management ─────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct RemoteAccessStatus {
+    pub enabled: bool,
+    pub port: u16,
+    pub paired_device_count: usize,
+}
+
+#[tauri::command]
+pub fn get_remote_access_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<RemoteAccessStatus, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+    let enabled = db::get_app_config(&conn, "remote_access_enabled")
+        .map_err(|e| e.to_string())?
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
+    let port: u16 = db::get_app_config(&conn, "remote_api_port")
+        .map_err(|e| e.to_string())?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(9401);
+
+    let devices = db::list_paired_devices(&conn)
+        .map_err(|e| e.to_string())?;
+
+    Ok(RemoteAccessStatus {
+        enabled,
+        port,
+        paired_device_count: devices.len(),
+    })
+}
+
+#[tauri::command]
+pub fn set_remote_access_enabled(
+    enabled: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::set_app_config(&conn, "remote_access_enabled", if enabled { "true" } else { "false" })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_remote_access_port(
+    port: u16,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if port < 1024 {
+        return Err("Port must be >= 1024".to_string());
+    }
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::set_app_config(&conn, "remote_api_port", &port.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct PairedDevice {
+    pub id: String,
+    pub device_name: String,
+    pub platform: Option<String>,
+    pub last_seen_at: Option<String>,
+    pub paired_at: String,
+}
+
+#[tauri::command]
+pub fn list_paired_devices(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<PairedDevice>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let devices = db::list_paired_devices(&conn)
+        .map_err(|e| e.to_string())?;
+
+    Ok(devices
+        .into_iter()
+        .map(|d| PairedDevice {
+            id: d.id,
+            device_name: d.device_name,
+            platform: d.platform,
+            last_seen_at: d.last_seen_at,
+            paired_at: d.paired_at,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn revoke_paired_device(
+    device_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::revoke_paired_device(&conn, &device_id)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -38,6 +38,16 @@ impl SidecarManager {
             self.sidecar_dir
         );
 
+        // Kill any existing process on the port (B3 fix)
+        #[cfg(unix)]
+        {
+            let port_str = format!(":{}", self.port);
+            let _ = Command::new("sh")
+                .arg("-c")
+                .arg(format!("lsof -ti {} | xargs kill -9", port_str))
+                .status();
+        }
+
         self.status = SidecarStatus::Starting;
 
         let child = Command::new("uv")

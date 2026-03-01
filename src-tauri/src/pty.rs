@@ -320,6 +320,11 @@ impl PtyManager {
         Ok(())
     }
 
+    /// List all active session IDs.
+    pub fn list_sessions(&self) -> Vec<String> {
+        self.sessions.keys().cloned().collect()
+    }
+
     pub fn kill_all(&mut self) {
         let ids: Vec<String> = self.sessions.keys().cloned().collect();
         for id in ids {
