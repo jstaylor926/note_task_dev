@@ -259,6 +259,12 @@ CREATE TABLE IF NOT EXISTS paired_devices (
 CREATE INDEX IF NOT EXISTS idx_paired_devices_token ON paired_devices(token_hash);
 CREATE INDEX IF NOT EXISTS idx_paired_devices_revoked ON paired_devices(revoked);
 
+CREATE TABLE IF NOT EXISTS editor_layouts (
+    workspace_profile_id TEXT PRIMARY KEY REFERENCES workspace_profiles(id) ON DELETE CASCADE,
+    layout_json TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- FTS5 Virtual Table for Search
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_search USING fts5(
     entity_id UNINDEXED,
@@ -1398,6 +1404,33 @@ pub fn set_app_config(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+// ─── Editor Layout ───────────────────────────────────────────────────
+
+/// Save the editor layout for the active workspace profile (upsert).
+pub fn save_editor_layout(conn: &Connection, profile_id: &str, layout_json: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO editor_layouts (workspace_profile_id, layout_json, updated_at)
+         VALUES (?1, ?2, CURRENT_TIMESTAMP)
+         ON CONFLICT(workspace_profile_id) DO UPDATE SET
+           layout_json = excluded.layout_json,
+           updated_at = CURRENT_TIMESTAMP",
+        params![profile_id, layout_json],
+    )?;
+    Ok(())
+}
+
+/// Get the saved editor layout for a workspace profile. Returns None if no layout was saved.
+pub fn get_editor_layout(conn: &Connection, profile_id: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT layout_json FROM editor_layouts WHERE workspace_profile_id = ?1",
+    )?;
+    let mut rows = stmt.query(params![profile_id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(row.get(0)?)),
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2072,5 +2105,38 @@ mod tests {
 
         let lineages = get_task_lineages(&conn, &[task.id.clone()]).unwrap();
         assert!(lineages.is_empty());
+    }
+
+    #[test]
+    fn test_editor_layout_save_and_get() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+
+        // Initially no layout
+        let layout = get_editor_layout(&conn, &pid).unwrap();
+        assert!(layout.is_none());
+
+        // Save layout
+        let json = r#"{"type":"pane","id":"pane-1","tabs":[],"activeTabIndex":0}"#;
+        save_editor_layout(&conn, &pid, json).unwrap();
+
+        // Get it back
+        let layout = get_editor_layout(&conn, &pid).unwrap();
+        assert_eq!(layout.as_deref(), Some(json));
+    }
+
+    #[test]
+    fn test_editor_layout_upsert() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let pid = get_active_profile_id(&conn).unwrap().unwrap();
+
+        let json1 = r#"{"type":"pane","id":"pane-1","tabs":[]}"#;
+        save_editor_layout(&conn, &pid, json1).unwrap();
+
+        let json2 = r#"{"type":"split","id":"split-1","children":[]}"#;
+        save_editor_layout(&conn, &pid, json2).unwrap();
+
+        let layout = get_editor_layout(&conn, &pid).unwrap();
+        assert_eq!(layout.as_deref(), Some(json2));
     }
 }

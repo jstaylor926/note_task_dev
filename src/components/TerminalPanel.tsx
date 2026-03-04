@@ -1,9 +1,10 @@
 import { onMount, onCleanup, For, Show, createEffect, createSignal } from 'solid-js';
-import { type PaneNode } from '../lib/terminalState';
+import { type PaneNode, getActiveSessionId } from '../lib/terminalState';
 import { terminalStore } from '../lib/terminalStoreInstance';
 import { translateTerminalCommand, type TerminalTranslateResponse } from '../lib/tauri';
 import XtermInstance from './XtermInstance';
 import PaneContainer from './PaneContainer';
+import ChatPanel from './ChatPanel';
 
 function TerminalPanel() {
   const { state, addTab, removeTab, setActiveTab, setActivePaneId, splitPane, closePane, resizeSplit } =
@@ -13,6 +14,9 @@ function TerminalPanel() {
   const [translateQuery, setTranslateQuery] = createSignal("");
   const [isTranslating, setIsTranslating] = createSignal(false);
   const [translation, setTranslation] = createSignal<TerminalTranslateResponse | null>(null);
+  const [showChat, setShowChat] = createSignal(false);
+  const [chatWidth, setChatWidth] = createSignal(320);
+  let chatContainerRef: HTMLDivElement | undefined;
 
   const handleTranslate = async (e: Event) => {
     e.preventDefault();
@@ -33,9 +37,12 @@ function TerminalPanel() {
 
   const runSuggestedCommand = () => {
     const res = translation();
-    if (res && state.activePaneId) {
-      const event = new CustomEvent('terminal:run-command', { 
-        detail: { sessionId: state.activePaneId, command: res.command } 
+    const tab = state.tabs[state.activeTabIndex];
+    if (res && tab && state.activePaneId) {
+      const sessionId = getActiveSessionId(tab.layout, state.activePaneId);
+      if (!sessionId) return;
+      const event = new CustomEvent('terminal:run-command', {
+        detail: { sessionId, command: res.command }
       });
       window.dispatchEvent(event);
       setShowTranslate(false);
@@ -43,6 +50,32 @@ function TerminalPanel() {
       setTranslateQuery("");
     }
   };
+
+  function handleChatResizeMouseDown(e: MouseEvent) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = chatWidth();
+
+    function onMouseMove(moveEvent: MouseEvent) {
+      const delta = startX - moveEvent.clientX;
+      const containerWidth = chatContainerRef?.clientWidth ?? 800;
+      const maxWidth = containerWidth * 0.5;
+      const newWidth = Math.max(200, Math.min(maxWidth, startWidth + delta));
+      setChatWidth(newWidth);
+    }
+
+    function onMouseUp() {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }
 
   onMount(() => {
     // Create initial tab
@@ -113,16 +146,26 @@ function TerminalPanel() {
         >
           +
         </button>
-        <div class="ml-auto flex items-center pr-2 border-l border-[var(--color-border)] ml-2">
+        <div class="ml-auto flex items-center gap-1 pr-2 border-l border-[var(--color-border)] ml-2">
           <button
             class={`px-2 py-0.5 text-[10px] font-bold rounded transition-colors ${
-              showTranslate() 
-                ? 'bg-[var(--color-accent)] text-white' 
+              showTranslate()
+                ? 'bg-[var(--color-accent)] text-white'
                 : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
             }`}
             onClick={() => setShowTranslate(!showTranslate())}
           >
             ASK AI
+          </button>
+          <button
+            class={`px-2 py-0.5 text-[10px] font-bold rounded transition-colors ${
+              showChat()
+                ? 'bg-[var(--color-accent)] text-white'
+                : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+            }`}
+            onClick={() => setShowChat(!showChat())}
+          >
+            CHAT
           </button>
         </div>
       </div>
@@ -178,18 +221,32 @@ function TerminalPanel() {
         </div>
       </Show>
 
-      {/* Active tab content */}
-      <div class="flex-1 min-h-0">
-        <Show when={state.tabs[state.activeTabIndex]}>
-          {(tab) => (
-            <PaneContainer
-              node={tab().layout}
-              activePaneId={state.activePaneId}
-              onFocusPane={setActivePaneId}
-              onResizeSplit={resizeSplit}
-              onExit={(paneId) => closePane(tab().id, paneId)}
-            />
-          )}
+      {/* Active tab content + chat split */}
+      <div ref={chatContainerRef} class="flex-1 min-h-0 flex flex-row">
+        <div class="flex-1 min-h-0 min-w-0">
+          <Show when={state.tabs[state.activeTabIndex]}>
+            {(tab) => (
+              <PaneContainer
+                node={tab().layout}
+                activePaneId={state.activePaneId}
+                onFocusPane={setActivePaneId}
+                onResizeSplit={resizeSplit}
+                onExit={(paneId) => closePane(tab().id, paneId)}
+              />
+            )}
+          </Show>
+        </div>
+        <Show when={showChat()}>
+          <div
+            class="w-1 shrink-0 cursor-col-resize bg-[var(--color-border)] hover:bg-[var(--color-accent)] transition-colors"
+            onMouseDown={handleChatResizeMouseDown}
+          />
+          <div
+            class="shrink-0 min-h-0 overflow-hidden"
+            style={{ width: `${chatWidth()}px` }}
+          >
+            <ChatPanel />
+          </div>
         </Show>
       </div>
     </div>

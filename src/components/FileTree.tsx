@@ -1,7 +1,7 @@
-import { onMount, onCleanup, For, Show, createMemo } from 'solid-js';
+import { onMount, onCleanup, For, Show, createMemo, createSignal } from 'solid-js';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { createFileTreeStore, type TreeNode } from '../lib/fileTreeState';
-import { getWorkspaceRoot } from '../lib/files';
+import { getWorkspaceRoot, fileStat } from '../lib/files';
 import { editorStore } from './EditorPanel';
 
 const fileTreeStore = createFileTreeStore();
@@ -88,6 +88,28 @@ function FileTreeNode(props: {
 function FileTree(props: { onFileSelect: (path: string) => void }) {
   let unlistenComplete: UnlistenFn | undefined;
   let unlistenDeleted: UnlistenFn | undefined;
+  const [showPathInput, setShowPathInput] = createSignal(false);
+  const [pathInput, setPathInput] = createSignal('');
+  const [pathError, setPathError] = createSignal<string | null>(null);
+
+  async function handleOpenFolder(e: Event) {
+    e.preventDefault();
+    const path = pathInput().trim();
+    if (!path) return;
+    setPathError(null);
+    try {
+      const stat = await fileStat(path);
+      if (!stat.is_dir) {
+        setPathError('Not a directory');
+        return;
+      }
+      await fileTreeStore.initRoot(path);
+      setShowPathInput(false);
+      setPathInput('');
+    } catch {
+      setPathError('Path not found');
+    }
+  }
 
   onMount(async () => {
     try {
@@ -131,7 +153,32 @@ function FileTree(props: { onFileSelect: (path: string) => void }) {
         <span class="text-xs font-medium uppercase tracking-wider text-[var(--color-text-secondary)]">
           Explorer
         </span>
+        <button
+          class="ml-auto text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+          onClick={() => { setShowPathInput(!showPathInput()); setPathError(null); }}
+          title="Open Folder"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 19a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 2h4a2 2 0 0 1 2 2v1"/>
+            <path d="M14 15l2 2 4-4"/>
+          </svg>
+        </button>
       </div>
+      <Show when={showPathInput()}>
+        <form onSubmit={handleOpenFolder} class="px-2 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-bg-panel)]">
+          <input
+            type="text"
+            autofocus
+            value={pathInput()}
+            onInput={(e) => { setPathInput(e.currentTarget.value); setPathError(null); }}
+            placeholder="Enter folder path..."
+            class="w-full bg-[var(--color-bg-primary)] border border-[var(--color-border)] rounded px-2 py-1 text-xs text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
+          />
+          <Show when={pathError()}>
+            <div class="text-[10px] text-[var(--color-error)] mt-1">{pathError()}</div>
+          </Show>
+        </form>
+      </Show>
       <div class="flex-1 overflow-auto py-1">
         <Show
           when={fileTreeStore.state.root}

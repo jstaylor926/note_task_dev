@@ -2,7 +2,6 @@ import { onMount, onCleanup, createSignal, Show } from 'solid-js';
 import EditorPanel, { editorStore, handleOpenFile } from '../components/EditorPanel';
 import TerminalPanel from '../components/TerminalPanel';
 import FileTree from '../components/FileTree';
-import ChatPanel from '../components/ChatPanel';
 import TaskPanel from '../components/TaskPanel';
 import IndexingStatus from '../components/IndexingStatus';
 import WorkspaceSwitcher from '../components/WorkspaceSwitcher';
@@ -18,6 +17,34 @@ function WorkspaceLayout() {
   const [showFileFinder, setShowFileFinder] = createSignal(false);
   const [showUniversalSearch, setShowUniversalSearch] = createSignal(false);
   const [showKnowledgeGraph, setShowKnowledgeGraph] = createSignal(false);
+  const [terminalHeight, setTerminalHeight] = createSignal(200);
+  let centerColumnRef: HTMLDivElement | undefined;
+
+  function handleResizeMouseDown(e: MouseEvent) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = terminalHeight();
+
+    function onMouseMove(moveEvent: MouseEvent) {
+      const delta = startY - moveEvent.clientY;
+      const containerHeight = centerColumnRef?.clientHeight ?? 600;
+      const maxHeight = containerHeight * 0.7;
+      const newHeight = Math.max(80, Math.min(maxHeight, startHeight + delta));
+      setTerminalHeight(newHeight);
+    }
+
+    function onMouseUp() {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+  }
 
   function handleGlobalKeyDown(e: KeyboardEvent) {
     const meta = e.metaKey || e.ctrlKey;
@@ -91,9 +118,9 @@ function WorkspaceLayout() {
       </header>
 
       {/* Main content area */}
-      <div class="flex-1 grid grid-cols-[260px_1fr_300px] grid-rows-[1fr_200px] min-h-0">
+      <div class="flex-1 grid grid-cols-[260px_1fr_300px] grid-rows-[1fr] min-h-0">
         {/* Left sidebar: FileTree + Tasks stacked */}
-        <div class="row-span-2 border-r border-[var(--color-border)] flex flex-col min-h-0">
+        <div class="border-r border-[var(--color-border)] flex flex-col min-h-0">
           <div class="flex-1 border-b border-[var(--color-border)] overflow-auto">
             <FileTree onFileSelect={handleOpenFile} />
           </div>
@@ -102,24 +129,28 @@ function WorkspaceLayout() {
           </div>
         </div>
 
-        {/* Center top: Editor */}
-        <div class="overflow-auto min-h-0">
-          <EditorPanel />
+        {/* Center column: Editor + resize handle + Terminal */}
+        <div ref={centerColumnRef} class="flex flex-col min-h-0">
+          <div class="flex-1 overflow-auto min-h-0">
+            <EditorPanel />
+          </div>
+          <div
+            class="h-1 shrink-0 cursor-row-resize bg-[var(--color-border)] hover:bg-[var(--color-accent)] transition-colors"
+            onMouseDown={handleResizeMouseDown}
+          />
+          <div
+            class="shrink-0 overflow-hidden min-h-0"
+            style={{ height: `${terminalHeight()}px` }}
+          >
+            <TerminalPanel />
+          </div>
         </div>
 
-        {/* Right sidebar: Search + Chat */}
-        <div class="row-span-2 border-l border-[var(--color-border)] flex flex-col min-h-0">
-          <div class="flex-1 overflow-auto border-b border-[var(--color-border)]">
+        {/* Right sidebar: Search */}
+        <div class="border-l border-[var(--color-border)] flex flex-col min-h-0">
+          <div class="flex-1 overflow-auto">
             <SearchPanel />
           </div>
-          <div class="h-[200px] shrink-0 overflow-auto">
-            <ChatPanel />
-          </div>
-        </div>
-
-        {/* Center bottom: Terminal */}
-        <div class="border-t border-[var(--color-border)] overflow-auto min-h-0">
-          <TerminalPanel />
         </div>
       </div>
 

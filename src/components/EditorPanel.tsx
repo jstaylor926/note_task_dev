@@ -1,6 +1,6 @@
 import { Show, For, createMemo, createSignal, createEffect, on, onMount } from 'solid-js';
 import CodeMirrorEditor from './CodeMirrorEditor';
-import { createEditorStore, type EditorPaneNode, type EditorFile } from '../lib/editorState';
+import { createEditorStore, type EditorPaneNode, type EditorFile, type SerializedEditorState, type SerializedLayout } from '../lib/editorState';
 import { fileRead, fileWrite } from '../lib/files';
 import { getRunCommand } from '../lib/runFile';
 import { getActiveSessionId } from '../lib/terminalState';
@@ -8,6 +8,7 @@ import { terminalStore } from '../lib/terminalStoreInstance';
 import { ptyWrite } from '../lib/pty';
 import { getLinksForFile } from '../lib/editorLinks';
 import type { LinkWithEntity } from '../lib/entityLinks';
+import { saveEditorLayout, getEditorLayout } from '../lib/tauri';
 
 const editorStore = createEditorStore();
 
@@ -69,10 +70,66 @@ function handleKeyDown(e: KeyboardEvent) {
   }
 }
 
+function collectPaths(layout: SerializedLayout): string[] {
+  if (layout.type === 'pane') {
+    return layout.tabs.map((t) => t.path);
+  }
+  return layout.children.flatMap(collectPaths);
+}
+
+async function restoreEditorLayout() {
+  if (!("__TAURI_INTERNALS__" in window)) return;
+  try {
+    const json = await getEditorLayout();
+    if (!json) return;
+    const serialized: SerializedEditorState = JSON.parse(json);
+    const paths = collectPaths(serialized.layout);
+    if (paths.length === 0) return;
+
+    const fileContents = new Map<string, string>();
+    const results = await Promise.allSettled(paths.map((p) => fileRead(p)));
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        fileContents.set(result.value.path, result.value.content);
+      }
+    }
+    if (fileContents.size > 0) {
+      editorStore.restoreLayout(serialized, fileContents);
+    }
+  } catch (e) {
+    console.error('Failed to restore editor layout:', e);
+  }
+}
+
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+function debouncedSaveLayout() {
+  if (!("__TAURI_INTERNALS__" in window)) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    const serialized = editorStore.getSerializedState();
+    saveEditorLayout(JSON.stringify(serialized)).catch((e) => {
+      console.error('Failed to save editor layout:', e);
+    });
+  }, 1000);
+}
+
 function EditorPanel() {
   onMount(() => {
     console.log("EditorPanel mounted, initial layout:", editorStore.state.layout);
+    restoreEditorLayout();
   });
+
+  // Watch layout changes and persist with debounce
+  createEffect(
+    on(
+      () => JSON.stringify(editorStore.getSerializedState()),
+      () => {
+        debouncedSaveLayout();
+      },
+      { defer: true },
+    ),
+  );
 
   return (
     <div
@@ -231,6 +288,7 @@ function EditorTabBar(props: { paneId: string }) {
 
           return (
             <button
+              data-testid={`editor-tab-${index()}`}
               class={`px-3 h-full text-xs flex items-center gap-2 border-r border-[var(--color-border)] whitespace-nowrap transition-colors ${
                 isTabActive()
                   ? 'bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] shadow-[inset_0_-1px_0_var(--color-accent)]'
@@ -249,6 +307,7 @@ function EditorTabBar(props: { paneId: string }) {
                 </Show>
               </span>
               <span
+                data-testid={`editor-tab-close-${index()}`}
                 class="hover:bg-white/10 rounded-sm p-0.5 text-[10px] leading-none transition-colors"
                 onClick={(e) => {
                   e.stopPropagation();

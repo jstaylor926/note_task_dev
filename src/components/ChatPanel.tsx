@@ -89,8 +89,8 @@ function ChatPanel() {
   };
 
   return (
-    <div class="h-full p-3 bg-[var(--color-bg-secondary)] flex flex-col overflow-hidden">
-      <div class="flex items-center justify-between mb-3">
+    <div class="h-full p-2 bg-[var(--color-bg-secondary)] flex flex-col overflow-hidden">
+      <div class="flex items-center justify-between mb-2">
         <div class="text-xs font-medium uppercase tracking-wider text-[var(--color-text-secondary)]">
           Chat
         </div>
@@ -101,38 +101,42 @@ function ChatPanel() {
         </Show>
       </div>
 
-      {/* Session Summary Card */}
+      {/* Session Summary Card (collapsible) */}
       <Show when={sessionSummary()}>
-        <div class="mb-4 p-2 rounded border border-[var(--color-accent)]/30 bg-[var(--color-bg-panel)] text-[11px] space-y-2">
-          <div class="font-bold text-[var(--color-text-primary)]">Last Session Summary:</div>
-          <div class="text-[var(--color-text-secondary)] italic">"{sessionSummary()?.summary}"</div>
-          
-          <Show when={sessionSummary()?.blockers.length}>
-            <div class="pt-1">
-              <span class="text-[var(--color-error)] font-bold">Blockers:</span>
-              <ul class="list-disc pl-4 mt-1">
-                <For each={sessionSummary()?.blockers}>
-                  {(b) => <li>{b}</li>}
-                </For>
-              </ul>
-            </div>
-          </Show>
+        <details class="mb-2">
+          <summary class="text-[10px] font-medium text-[var(--color-text-secondary)] cursor-pointer hover:text-[var(--color-text-primary)] transition-colors">
+            Last Session Summary
+          </summary>
+          <div class="mt-1 p-2 rounded border border-[var(--color-accent)]/30 bg-[var(--color-bg-panel)] text-[11px] space-y-2">
+            <div class="text-[var(--color-text-secondary)] italic">"{sessionSummary()?.summary}"</div>
 
-          <Show when={sessionSummary()?.next_steps.length}>
-            <div class="pt-1">
-              <span class="text-[var(--color-success)] font-bold">Next Steps:</span>
-              <ul class="list-disc pl-4 mt-1">
-                <For each={sessionSummary()?.next_steps}>
-                  {(s) => <li>{s}</li>}
-                </For>
-              </ul>
-            </div>
-          </Show>
-        </div>
+            <Show when={sessionSummary()?.blockers.length}>
+              <div class="pt-1">
+                <span class="text-[var(--color-error)] font-bold">Blockers:</span>
+                <ul class="list-disc pl-4 mt-1">
+                  <For each={sessionSummary()?.blockers}>
+                    {(b) => <li>{b}</li>}
+                  </For>
+                </ul>
+              </div>
+            </Show>
+
+            <Show when={sessionSummary()?.next_steps.length}>
+              <div class="pt-1">
+                <span class="text-[var(--color-success)] font-bold">Next Steps:</span>
+                <ul class="list-disc pl-4 mt-1">
+                  <For each={sessionSummary()?.next_steps}>
+                    {(s) => <li>{s}</li>}
+                  </For>
+                </ul>
+              </div>
+            </Show>
+          </div>
+        </details>
       </Show>
 
       {/* Message List */}
-      <div class="flex-1 overflow-y-auto mb-3 space-y-3 pr-1 scrollbar-thin">
+      <div class="flex-1 overflow-y-auto mb-2 space-y-2 pr-1 scrollbar-thin">
         <For each={messages()}>
           {(msg) => (
             <div class={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
@@ -172,7 +176,7 @@ function ChatPanel() {
             }
           }}
           placeholder="Ask Cortex anything..."
-          class="w-full p-2 pr-10 bg-[var(--color-bg-panel)] border border-[var(--color-border)] rounded text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-secondary)] focus:outline-none focus:border-[var(--color-accent)] resize-none min-h-[60px]"
+          class="w-full p-2 pr-10 bg-[var(--color-bg-panel)] border border-[var(--color-border)] rounded text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-secondary)] focus:outline-none focus:border-[var(--color-accent)] resize-none min-h-[36px]"
         />
         <button
           type="submit"

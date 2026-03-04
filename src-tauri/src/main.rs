@@ -323,6 +323,8 @@ fn main() {
             commands::terminal_command_persist,
             lsp_commands::lsp_spawn,
             lsp_commands::lsp_send,
+            commands::save_editor_layout,
+            commands::get_editor_layout,
         ])
         .build(tauri::generate_context!())
         .expect("error building cortex")

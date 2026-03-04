@@ -62,6 +62,7 @@ vi.mock('@codemirror/language', () => ({
 vi.mock('@codemirror/autocomplete', () => ({
   closeBrackets: vi.fn(() => ({})),
   closeBracketsKeymap: [],
+  completionKeymap: [],
 }));
 
 vi.mock('@codemirror/search', () => ({
@@ -71,6 +72,12 @@ vi.mock('@codemirror/search', () => ({
 
 vi.mock('@codemirror/lint', () => ({
   lintKeymap: [],
+  lintGutter: vi.fn(() => ({})),
+}));
+
+vi.mock('codemirror-languageserver', () => ({
+  LanguageServerClient: vi.fn(),
+  languageServerWithTransport: vi.fn(() => ({})),
 }));
 
 vi.mock('../../lib/codemirrorTheme', () => ({

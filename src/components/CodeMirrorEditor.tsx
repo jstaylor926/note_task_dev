@@ -3,9 +3,9 @@ import { EditorState } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, foldGutter, foldKeymap } from '@codemirror/language';
-import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
+import { closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
-import { lintKeymap } from '@codemirror/lint';
+import { lintKeymap, lintGutter } from '@codemirror/lint';
 import { cortexThemeExtension } from '../lib/codemirrorTheme';
 import { getLanguageExtension } from '../lib/codemirrorLanguages';
 import { LanguageServerClient, languageServerWithTransport } from 'codemirror-languageserver';
@@ -73,6 +73,7 @@ function CodeMirrorEditor(props: CodeMirrorEditorProps) {
       highlightActiveLineGutter(),
       history(),
       foldGutter(),
+      lintGutter(),
       drawSelection(),
       dropCursor(),
       indentOnInput(),
@@ -82,6 +83,7 @@ function CodeMirrorEditor(props: CodeMirrorEditorProps) {
       highlightSelectionMatches(),
       keymap.of([
         ...closeBracketsKeymap,
+        ...completionKeymap,
         ...defaultKeymap,
         ...searchKeymap,
         ...historyKeymap,

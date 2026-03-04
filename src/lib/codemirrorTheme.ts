@@ -113,6 +113,54 @@ export const cortexTheme = EditorView.theme(
         color: textPrimary,
       },
     },
+    // ─── Autocomplete ─────────────────────────────────────────
+    '.cm-completionDetail': {
+      fontStyle: 'italic',
+      color: textSecondary,
+      marginLeft: '0.5em',
+    },
+    '.cm-completionMatchedText': {
+      color: accent,
+      textDecoration: 'none',
+      fontWeight: 'bold',
+    },
+    // ─── Lint / Diagnostics ──────────────────────────────────
+    '.cm-lintRange-error': {
+      backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='3'%3E%3Cpath d='m0 3 l2 -2 l1 0 l2 2 l1 0' stroke='%23ef4444' fill='none' stroke-width='.7'/%3E%3C/svg%3E")`,
+    },
+    '.cm-lintRange-warning': {
+      backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='3'%3E%3Cpath d='m0 3 l2 -2 l1 0 l2 2 l1 0' stroke='%23f59e0b' fill='none' stroke-width='.7'/%3E%3C/svg%3E")`,
+    },
+    '.cm-lintRange-info': {
+      backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='3'%3E%3Cpath d='m0 3 l2 -2 l1 0 l2 2 l1 0' stroke='%236366f1' fill='none' stroke-width='.7'/%3E%3C/svg%3E")`,
+    },
+    '.cm-lint-marker-error': {
+      content: '"●"',
+      color: error,
+    },
+    '.cm-lint-marker-warning': {
+      content: '"●"',
+      color: '#f59e0b',
+    },
+    '.cm-tooltip-lint': {
+      backgroundColor: bgPanel,
+      border: `1px solid ${border}`,
+      borderRadius: '4px',
+      padding: '4px 8px',
+    },
+    '.cm-diagnostic': {
+      padding: '3px 6px 3px 8px',
+      marginLeft: '-1px',
+    },
+    '.cm-diagnostic-error': {
+      borderLeft: `3px solid ${error}`,
+    },
+    '.cm-diagnostic-warning': {
+      borderLeft: '3px solid #f59e0b',
+    },
+    '.cm-diagnostic-info': {
+      borderLeft: `3px solid ${accent}`,
+    },
   },
   { dark: true },
 );

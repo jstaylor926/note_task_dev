@@ -30,6 +30,83 @@ interface EditorState {
   error: string | null;
 }
 
+// ─── Serialization Types ─────────────────────────────────────────────
+
+export interface SerializedTab {
+  path: string;
+  language: string | undefined;
+}
+
+export type SerializedLayout =
+  | {
+      type: 'pane';
+      id: string;
+      tabs: SerializedTab[];
+      activeTabIndex: number;
+    }
+  | {
+      type: 'split';
+      id: string;
+      direction: 'horizontal' | 'vertical';
+      children: SerializedLayout[];
+      sizes: number[];
+    };
+
+export interface SerializedEditorState {
+  layout: SerializedLayout;
+  activePaneId: string | null;
+}
+
+export function serializeLayout(node: EditorPaneNode): SerializedLayout {
+  if (node.type === 'pane') {
+    return {
+      type: 'pane',
+      id: node.id,
+      tabs: node.tabs.map((t) => ({ path: t.path, language: t.language })),
+      activeTabIndex: node.activeTabIndex,
+    };
+  }
+  return {
+    type: 'split',
+    id: node.id,
+    direction: node.direction,
+    children: node.children.map(serializeLayout),
+    sizes: [...node.sizes],
+  };
+}
+
+export function deserializeLayout(
+  serialized: SerializedLayout,
+  fileContents: Map<string, string>,
+): EditorPaneNode {
+  if (serialized.type === 'pane') {
+    const tabs: EditorFile[] = serialized.tabs
+      .filter((t) => fileContents.has(t.path))
+      .map((t) => {
+        const content = fileContents.get(t.path)!;
+        return {
+          path: t.path,
+          content,
+          savedContent: content,
+          language: t.language,
+        };
+      });
+    return {
+      type: 'pane',
+      id: serialized.id,
+      tabs,
+      activeTabIndex: Math.min(serialized.activeTabIndex, Math.max(0, tabs.length - 1)),
+    };
+  }
+  return {
+    type: 'split',
+    id: serialized.id,
+    direction: serialized.direction,
+    children: serialized.children.map((c) => deserializeLayout(c, fileContents)),
+    sizes: [...serialized.sizes],
+  };
+}
+
 const LARGE_FILE_LINE_THRESHOLD = 50000;
 
 let nextId = 0;
@@ -230,7 +307,7 @@ export function createEditorStore() {
   }
 
   function isAnyDirty(): boolean {
-    return anyInLayout(state.layout, (pane) => 
+    return anyInLayout(state.layout, (pane) =>
       pane.type === 'pane' && pane.tabs.some(t => t.content !== t.savedContent)
     );
   }
@@ -242,6 +319,24 @@ export function createEditorStore() {
       return pane.tabs[pane.activeTabIndex] || null;
     }
     return null;
+  }
+
+  function getSerializedState(): SerializedEditorState {
+    return {
+      layout: serializeLayout(state.layout),
+      activePaneId: state.activePaneId,
+    };
+  }
+
+  function restoreLayout(serialized: SerializedEditorState, fileContents: Map<string, string>) {
+    setState(
+      produce((s) => {
+        s.layout = deserializeLayout(serialized.layout, fileContents);
+        // Validate activePaneId still exists
+        const pane = findPaneByIdMut(s.layout, serialized.activePaneId || '');
+        s.activePaneId = pane ? serialized.activePaneId : (getFirstPaneMut(s.layout)?.id ?? null);
+      }),
+    );
   }
 
   return {
@@ -261,6 +356,8 @@ export function createEditorStore() {
     getActiveFile,
     isDirty,
     isAnyDirty,
+    getSerializedState,
+    restoreLayout,
   };
 }
 

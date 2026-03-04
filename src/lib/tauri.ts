@@ -194,3 +194,13 @@ export async function persistTerminalCommand(
     output,
   });
 }
+
+// ─── Editor Layout Persistence ──────────────────────────────────────
+
+export async function saveEditorLayout(layoutJson: string): Promise<void> {
+  return invoke<void>('save_editor_layout', { layoutJson });
+}
+
+export async function getEditorLayout(): Promise<string | null> {
+  return invoke<string | null>('get_editor_layout');
+}

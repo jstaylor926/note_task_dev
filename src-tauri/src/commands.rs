@@ -777,6 +777,33 @@ pub fn chat_history_list(
     db::list_chat_history(&conn, &profile_id, limit.unwrap_or(50)).map_err(|e| e.to_string())
 }
 
+// ─── Editor Layout Persistence ───────────────────────────────────────
+
+#[tauri::command]
+pub fn save_editor_layout(
+    layout_json: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let profile_id = db::get_active_profile_id(&conn)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "default".to_string());
+    db::save_editor_layout(&conn, &profile_id, &layout_json)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_editor_layout(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let profile_id = db::get_active_profile_id(&conn)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "default".to_string());
+    db::get_editor_layout(&conn, &profile_id)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
