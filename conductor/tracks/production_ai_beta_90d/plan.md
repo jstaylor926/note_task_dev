@@ -29,7 +29,7 @@
 - [x] Add production launcher path for bundled sidecar executable with dev-mode `uv run` fallback.
 - [~] Build sidecar binary artifact per OS in CI and package in release jobs.
 - [~] Signed updater/release pipeline for Tauri artifacts.
-- [ ] Startup diagnostics panel and persistent log export UI.
+- [x] Startup diagnostics panel and persistent log export UI.
 - [~] SQLite schema migration versioning for new production tables.
 
 ## Phase 4: AI/ML/LLM Quality (Session Handoff First)
@@ -37,11 +37,11 @@
 - [x] Add sidecar session synthesis schema with confidence/provenance/source fields and deterministic fallback.
 - [x] Add `hybrid_search` and `/api/v1/rag/query` route with optional rerank mode.
 - [x] Add `model_list` + profile default-model update command.
-- [~] Add robust streaming chat transport (current version is compatibility chunking).
+- [~] Add robust streaming chat transport (Rust now consumes sidecar SSE with non-stream fallback; next step is true incremental UI streaming events).
 - [~] Add retrieval eval harness and golden quality benchmark automation.
 
 ## Phase 5: Beta Readiness
 - [ ] Define release checklist and cut controlled `beta` channel build.
 - [ ] Private beta onboarding workflow (20-100 users).
-- [ ] In-app feedback capture tied to trace IDs.
+- [x] In-app feedback capture tied to trace IDs (SearchPanel now submits per-result feedback with search trace IDs).
 - [ ] Two-week stabilization sprint process for crashers and AI regressions.

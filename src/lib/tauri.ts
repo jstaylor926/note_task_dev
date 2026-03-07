@@ -8,6 +8,34 @@ export interface HealthStatus {
   lancedb: string;
 }
 
+export interface DiagnosticsAuditEvent {
+  event_type: string;
+  actor: string | null;
+  trace_id: string | null;
+  created_at: string;
+}
+
+export interface StartupDiagnostics {
+  generated_at_epoch_sec: number;
+  sidecar_process_status: string;
+  health: HealthStatus;
+  indexing: {
+    completed: number;
+    total: number;
+    current_file: string | null;
+    is_idle: boolean;
+  };
+  active_profile_id: string;
+  project_root: string;
+  git_branch: string;
+  remote_access: {
+    enabled: boolean;
+    port: number;
+    paired_device_count: number;
+  };
+  recent_audit_events: DiagnosticsAuditEvent[];
+}
+
 export interface IndexingProgress {
   completed: number;
   total: number;
@@ -65,6 +93,25 @@ export async function checkHealth(): Promise<HealthStatus> {
 
 export async function getAppStatus(): Promise<string> {
   return invoke<string>('get_app_status');
+}
+
+export async function getStartupDiagnostics(): Promise<StartupDiagnostics> {
+  return invoke<StartupDiagnostics>('startup_diagnostics');
+}
+
+export async function exportDiagnosticsLog(): Promise<string> {
+  return invoke<string>('diagnostics_export');
+}
+
+export async function submitRetrievalFeedback(input: {
+  query: string;
+  selectedResultId?: string;
+  selectedResultType?: string;
+  relevanceLabel?: string;
+  traceId?: string;
+  metadataJson?: string;
+}): Promise<string> {
+  return invoke<string>('feedback_submit', input);
 }
 
 export async function semanticSearch(

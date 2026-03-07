@@ -1,7 +1,9 @@
 use crate::AppState;
 use crate::db;
 use crate::events;
+use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
+use tauri::Manager;
 
 fn detect_current_git_branch(project_root: &str) -> String {
     std::process::Command::new("git")
@@ -142,6 +144,211 @@ pub async fn health_check(state: tauri::State<'_, AppState>) -> Result<HealthSta
 pub fn get_app_status(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let manager = state.sidecar_manager.lock().map_err(|e| e.to_string())?;
     Ok(format!("{:?}", manager.status))
+}
+
+#[derive(serde::Serialize)]
+pub struct DiagnosticsAuditEvent {
+    pub event_type: String,
+    pub actor: Option<String>,
+    pub trace_id: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct StartupDiagnostics {
+    pub generated_at_epoch_sec: u64,
+    pub sidecar_process_status: String,
+    pub health: HealthStatus,
+    pub indexing: events::IndexingProgressPayload,
+    pub active_profile_id: String,
+    pub project_root: String,
+    pub git_branch: String,
+    pub remote_access: RemoteAccessStatus,
+    pub recent_audit_events: Vec<DiagnosticsAuditEvent>,
+}
+
+async fn collect_startup_diagnostics(
+    state: &AppState,
+) -> Result<StartupDiagnostics, String> {
+    let generated_at_epoch_sec = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let sidecar_process_status = {
+        let manager = state.sidecar_manager.lock().map_err(|e| e.to_string())?;
+        format!("{:?}", manager.status)
+    };
+
+    let indexing = {
+        let idx = state.indexing.lock().map_err(|e| e.to_string())?;
+        events::IndexingProgressPayload {
+            completed: idx.completed,
+            total: idx.total_queued,
+            current_file: idx.current_file.clone(),
+            is_idle: idx.is_idle(),
+        }
+    };
+
+    let sqlite_status = {
+        let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+        match db_conn.execute_batch("SELECT 1") {
+            Ok(_) => "ok".to_string(),
+            Err(e) => format!("error: {}", e),
+        }
+    };
+
+    let (active_profile_id, remote_access, recent_audit_events) = {
+        let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+        let profile_id = db::get_active_profile_id(&db_conn)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| "default".to_string());
+
+        let enabled = db::get_app_config(&db_conn, "remote_access_enabled")
+            .map_err(|e| e.to_string())?
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        let port: u16 = db::get_app_config(&db_conn, "remote_api_port")
+            .map_err(|e| e.to_string())?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(9401);
+        let paired_device_count = db::list_paired_devices(&db_conn)
+            .map_err(|e| e.to_string())?
+            .len();
+
+        let events = db::list_recent_app_audit_logs(&db_conn, 20)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|row| DiagnosticsAuditEvent {
+                event_type: row.event_type,
+                actor: row.actor,
+                trace_id: row.trace_id,
+                created_at: row.created_at,
+            })
+            .collect::<Vec<_>>();
+
+        (
+            profile_id,
+            RemoteAccessStatus {
+                enabled,
+                port,
+                paired_device_count,
+            },
+            events,
+        )
+    };
+
+    let (sidecar_status, lancedb_status) =
+        match crate::sidecar::check_sidecar_health(&state.sidecar_url).await {
+            Ok(body) => {
+                let sc = body
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let ldb = body
+                    .get("lancedb")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                (sc, ldb)
+            }
+            Err(e) => (format!("unreachable: {}", e), "unknown".to_string()),
+        };
+
+    Ok(StartupDiagnostics {
+        generated_at_epoch_sec,
+        sidecar_process_status,
+        health: HealthStatus {
+            tauri: "ok".to_string(),
+            sidecar: sidecar_status,
+            sqlite: sqlite_status,
+            lancedb: lancedb_status,
+        },
+        indexing,
+        active_profile_id,
+        project_root: state.project_root.clone(),
+        git_branch: detect_current_git_branch(&state.project_root),
+        remote_access,
+        recent_audit_events,
+    })
+}
+
+#[tauri::command]
+pub async fn startup_diagnostics(
+    state: tauri::State<'_, AppState>,
+) -> Result<StartupDiagnostics, String> {
+    collect_startup_diagnostics(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn diagnostics_export(
+    state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let diagnostics = collect_startup_diagnostics(state.inner()).await?;
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {}", e))?;
+    let diagnostics_dir = app_data_dir.join("diagnostics");
+    std::fs::create_dir_all(&diagnostics_dir)
+        .map_err(|e| format!("failed to create diagnostics directory: {}", e))?;
+
+    let file_path = diagnostics_dir.join(format!(
+        "startup-diagnostics-{}.json",
+        diagnostics.generated_at_epoch_sec
+    ));
+    let body = serde_json::to_string_pretty(&diagnostics)
+        .map_err(|e| format!("failed to serialize diagnostics: {}", e))?;
+    std::fs::write(&file_path, body)
+        .map_err(|e| format!("failed to write diagnostics export: {}", e))?;
+
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let details = serde_json::json!({
+            "path": file_path.to_string_lossy(),
+            "kind": "startup_diagnostics",
+        })
+        .to_string();
+        let _ = db::insert_app_audit_log(
+            &conn,
+            "diagnostics.exported",
+            Some("local_user"),
+            None,
+            Some(&details),
+        );
+    }
+
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn feedback_submit(
+    query: String,
+    selected_result_id: Option<String>,
+    selected_result_type: Option<String>,
+    relevance_label: Option<String>,
+    trace_id: Option<String>,
+    metadata_json: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let profile_id = db::get_active_profile_id(&conn)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "default".to_string());
+
+    db::insert_retrieval_feedback(
+        &conn,
+        Some(&profile_id),
+        &query,
+        selected_result_id.as_deref(),
+        selected_result_type.as_deref(),
+        relevance_label.as_deref(),
+        trace_id.as_deref(),
+        metadata_json.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[derive(serde::Serialize)]
@@ -466,7 +673,7 @@ pub fn get_latest_session(state: tauri::State<'_, AppState>) -> Result<Option<db
 
 // ─── Chat ────────────────────────────────────────────────────────────
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct ChatMessageInput {
     pub role: String,
     pub content: String,
@@ -561,18 +768,189 @@ pub async fn chat_send_stream(
     request: ChatSendStreamRequest,
     state: tauri::State<'_, AppState>,
 ) -> Result<ChatSendStreamResponse, String> {
-    // Compatibility implementation: emit chunked text from a standard completion.
-    let res = chat_send(request.messages, request.model, state).await?;
-    let content = res["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or_default();
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/v1/chat", state.sidecar_url);
+    let request_messages = request.messages.clone();
+    let requested_model = request.model.clone();
+    let effective_model = request
+        .model
+        .clone()
+        .unwrap_or_else(|| "ollama/llama3".to_string());
+    let started_at = std::time::Instant::now();
 
-    let chunks = content
-        .split_whitespace()
-        .map(|t| ChatStreamChunk {
-            delta: format!("{} ", t),
+    let profile_id = {
+        let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::get_active_profile_id(&db_conn)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| "default".to_string())
+    };
+
+    let body = serde_json::json!({
+        "messages": request_messages,
+        "model": effective_model,
+        "stream": true,
+        "context_strategy": "session"
+    });
+
+    let stream_result: Result<(Vec<ChatStreamChunk>, String), String> = async {
+        let response = crate::sidecar_client::send_with_policy(|| {
+            client.post(url.clone()).json(&body)
         })
-        .collect();
+        .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let err_body = response.text().await.map_err(|e| e.to_string())?;
+            if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&err_body) {
+                let (code, message) = extract_sidecar_error_detail(&payload);
+                return Err(format!(
+                    "{} (HTTP {}): {}",
+                    code,
+                    status.as_u16(),
+                    message
+                ));
+            }
+            return Err(format!(
+                "SIDECAR_HTTP_{}: {}",
+                status.as_u16(),
+                err_body
+            ));
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut chunks: Vec<ChatStreamChunk> = Vec::new();
+        let mut full_content = String::new();
+
+        while let Some(next_chunk) = stream.next().await {
+            let bytes = next_chunk.map_err(|e| format!("Stream read failed: {}", e))?;
+            buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+            while let Some(newline_idx) = buffer.find('\n') {
+                let line = buffer[..newline_idx].trim_end_matches('\r').to_string();
+                buffer.drain(..=newline_idx);
+
+                let trimmed = line.trim();
+                if trimmed.is_empty() || !trimmed.starts_with("data:") {
+                    continue;
+                }
+                let payload = trimmed.trim_start_matches("data:").trim();
+                if payload == "[DONE]" {
+                    continue;
+                }
+
+                let parsed: serde_json::Value = serde_json::from_str(payload)
+                    .map_err(|e| format!("Malformed stream payload: {}", e))?;
+
+                if let Some(err) = parsed.get("error").and_then(|v| v.as_str()) {
+                    return Err(format!("CHAT_STREAM_ERROR: {}", err));
+                }
+
+                if let Some(delta) = parsed.get("content").and_then(|v| v.as_str()) {
+                    if !delta.is_empty() {
+                        full_content.push_str(delta);
+                        chunks.push(ChatStreamChunk {
+                            delta: delta.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        if !buffer.trim().is_empty() {
+            let trailing = buffer.trim();
+            if trailing.starts_with("data:") {
+                let payload = trailing.trim_start_matches("data:").trim();
+                if payload != "[DONE]" {
+                    let parsed: serde_json::Value = serde_json::from_str(payload)
+                        .map_err(|e| format!("Malformed trailing stream payload: {}", e))?;
+                    if let Some(delta) = parsed.get("content").and_then(|v| v.as_str()) {
+                        if !delta.is_empty() {
+                            full_content.push_str(delta);
+                            chunks.push(ChatStreamChunk {
+                                delta: delta.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        if full_content.is_empty() {
+            return Err("Empty stream response".to_string());
+        }
+
+        Ok((chunks, full_content))
+    }
+    .await;
+
+    let (chunks, full_content) = match stream_result {
+        Ok(result) => result,
+        Err(stream_err) => {
+            log::warn!("chat_send_stream fallback to non-stream: {}", stream_err);
+            let fallback_res = chat_send(request_messages, requested_model, state).await?;
+            let fallback_content = fallback_res["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let fallback_chunks = fallback_content
+                .split_whitespace()
+                .map(|t| ChatStreamChunk {
+                    delta: format!("{} ", t),
+                })
+                .collect();
+            return Ok(ChatSendStreamResponse {
+                chunks: fallback_chunks,
+                done: true,
+            });
+        }
+    };
+
+    {
+        let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+
+        if let Some(last_msg) = request.messages.last() {
+            if last_msg.role == "user" {
+                let _ = db::create_chat_message(
+                    &db_conn,
+                    &profile_id,
+                    None,
+                    "user",
+                    &last_msg.content,
+                    request.model.as_deref(),
+                );
+            }
+        }
+
+        let _ = db::create_chat_message(
+            &db_conn,
+            &profile_id,
+            None,
+            "assistant",
+            &full_content,
+            None,
+        );
+
+        let provider = request
+            .model
+            .as_deref()
+            .and_then(|m| m.split('/').next())
+            .unwrap_or("ollama");
+        let _ = db::insert_llm_run(
+            &db_conn,
+            Some(&profile_id),
+            Some(provider),
+            &effective_model,
+            "chat_stream",
+            "success",
+            Some(started_at.elapsed().as_millis() as i64),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+    }
 
     Ok(ChatSendStreamResponse { chunks, done: true })
 }
