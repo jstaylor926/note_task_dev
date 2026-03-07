@@ -303,6 +303,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::health_check,
             commands::get_app_status,
+            commands::startup_diagnostics,
+            commands::diagnostics_export,
+            commands::feedback_submit,
             commands::semantic_search,
             commands::hybrid_search,
             commands::get_indexing_status,

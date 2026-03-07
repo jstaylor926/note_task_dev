@@ -3,7 +3,7 @@ import {
   checkHealth, 
   type HealthStatus, 
   type ChatMessage, 
-  sendChatMessage, 
+  sendChatMessageStream, 
   getLatestSession, 
   type SessionStatePayload 
 } from "../lib/tauri";
@@ -56,19 +56,21 @@ function ChatPanel() {
     if (!text || isTyping()) return;
 
     const userMsg: ChatMessage = { role: "user", content: text };
-    setMessages([...messages(), userMsg]);
+    const nextMessages = [...messages(), userMsg];
+    setMessages(nextMessages);
     setInputText("");
     setIsTyping(true);
 
     try {
-      const response = await sendChatMessage(messages());
+      const streamResponse = await sendChatMessageStream(nextMessages);
+      const content = streamResponse.chunks.map((chunk) => chunk.delta).join("");
       const assistantMsg: ChatMessage = {
         role: "assistant",
-        content: response.choices[0].message.content
+        content: content || "No response received.",
       };
-      setMessages([...messages(), assistantMsg]);
+      setMessages([...nextMessages, assistantMsg]);
     } catch (e) {
-      setMessages([...messages(), { role: "system", content: `Error: ${String(e)}` }]);
+      setMessages([...nextMessages, { role: "system", content: `Error: ${String(e)}` }]);
     } finally {
       setIsTyping(false);
     }

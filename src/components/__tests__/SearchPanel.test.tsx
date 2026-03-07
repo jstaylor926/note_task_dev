@@ -229,4 +229,80 @@ describe('SearchPanel', () => {
     // Select should be hidden
     expect(container.querySelector('select')).toBeFalsy();
   });
+
+  it('submits retrieval feedback with trace id from the active search', async () => {
+    (invoke as ReturnType<typeof vi.fn>).mockImplementation((cmd: string) => {
+      if (cmd === 'semantic_search') {
+        return Promise.resolve({
+          results: [mockResult()],
+          query: 'function',
+        });
+      }
+      if (cmd === 'feedback_submit') {
+        return Promise.resolve('ok');
+      }
+      return Promise.resolve(null);
+    });
+
+    const { default: SearchPanel } = await import('../SearchPanel');
+    const { container, getByText } = render(() => <SearchPanel />);
+    const input = container.querySelector('input') as HTMLInputElement;
+    const form = container.querySelector('form') as HTMLFormElement;
+
+    fireEvent.input(input, { target: { value: 'function' } });
+    fireEvent.submit(form);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('src/main.rs');
+    });
+
+    fireEvent.click(getByText('Helpful'));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(
+        'feedback_submit',
+        expect.objectContaining({
+          query: 'function',
+          selectedResultId: 'src/main.rs:0:main',
+          selectedResultType: 'code',
+          relevanceLabel: 'relevant',
+          traceId: expect.stringMatching(/^search-/),
+        }),
+      );
+      expect(container.textContent).toContain('Feedback saved.');
+    });
+  });
+
+  it('shows feedback error if submission fails', async () => {
+    (invoke as ReturnType<typeof vi.fn>).mockImplementation((cmd: string) => {
+      if (cmd === 'semantic_search') {
+        return Promise.resolve({
+          results: [mockResult()],
+          query: 'function',
+        });
+      }
+      if (cmd === 'feedback_submit') {
+        return Promise.reject(new Error('db unavailable'));
+      }
+      return Promise.resolve(null);
+    });
+
+    const { default: SearchPanel } = await import('../SearchPanel');
+    const { container, getByText } = render(() => <SearchPanel />);
+    const input = container.querySelector('input') as HTMLInputElement;
+    const form = container.querySelector('form') as HTMLFormElement;
+
+    fireEvent.input(input, { target: { value: 'function' } });
+    fireEvent.submit(form);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('src/main.rs');
+    });
+
+    fireEvent.click(getByText('Not Helpful'));
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('Feedback failed. Try again.');
+    });
+  });
 });

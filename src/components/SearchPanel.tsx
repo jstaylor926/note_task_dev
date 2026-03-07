@@ -1,9 +1,16 @@
 import { createSignal, For, Show } from 'solid-js';
-import { semanticSearch, type SearchResult, type SearchFilters } from '../lib/tauri';
+import {
+  semanticSearch,
+  submitRetrievalFeedback,
+  type SearchResult,
+  type SearchFilters,
+} from '../lib/tauri';
 import { entitySearch, type EntitySearchResult } from '../lib/entitySearch';
 import { noteStore } from '../lib/noteStoreInstance';
 
 type SearchScope = 'code' | 'entities';
+type FeedbackState = 'idle' | 'submitting' | 'positive' | 'negative' | 'error';
+type RelevanceLabel = 'relevant' | 'not_relevant';
 
 const LANGUAGE_OPTIONS = [
   { value: '', label: 'All Languages' },
@@ -34,6 +41,7 @@ const ENTITY_TYPE_COLORS: Record<string, string> = {
 
 function SearchPanel() {
   const [query, setQuery] = createSignal('');
+  const [lastSearchedQuery, setLastSearchedQuery] = createSignal('');
   const [results, setResults] = createSignal<SearchResult[]>([]);
   const [entityResults, setEntityResults] = createSignal<EntitySearchResult[]>([]);
   const [loading, setLoading] = createSignal(false);
@@ -42,6 +50,20 @@ function SearchPanel() {
   const [languageFilter, setLanguageFilter] = createSignal('');
   const [sourceTypeFilter, setSourceTypeFilter] = createSignal('');
   const [scope, setScope] = createSignal<SearchScope>('code');
+  const [searchTraceId, setSearchTraceId] = createSignal<string | null>(null);
+  const [feedbackStateByResult, setFeedbackStateByResult] = createSignal<Record<string, FeedbackState>>({});
+
+  const generateTraceId = () => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return `search-${crypto.randomUUID()}`;
+    }
+    return `search-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  };
+
+  const resultId = (result: SearchResult) => {
+    const entity = result.entity_name ?? 'chunk';
+    return `${result.source_file}:${result.chunk_index}:${entity}`;
+  };
 
   const handleSearch = async (e: Event) => {
     e.preventDefault();
@@ -54,14 +76,19 @@ function SearchPanel() {
 
     try {
       if (scope() === 'code') {
+        const traceId = generateTraceId();
         const filters: SearchFilters = {};
         if (languageFilter()) filters.language = languageFilter();
         if (sourceTypeFilter()) filters.source_type = sourceTypeFilter();
         const response = await semanticSearch(q, 10, filters);
+        setSearchTraceId(traceId);
+        setLastSearchedQuery(q);
+        setFeedbackStateByResult({});
         setResults(response.results);
         setEntityResults([]);
       } else {
         const results = await entitySearch(q, undefined, 20);
+        setSearchTraceId(null);
         setEntityResults(results);
         setResults([]);
       }
@@ -71,6 +98,34 @@ function SearchPanel() {
       setEntityResults([]);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const submitFeedback = async (result: SearchResult, relevanceLabel: RelevanceLabel) => {
+    const id = resultId(result);
+    setFeedbackStateByResult((prev) => ({ ...prev, [id]: 'submitting' }));
+    try {
+      await submitRetrievalFeedback({
+        query: lastSearchedQuery() || query().trim(),
+        selectedResultId: id,
+        selectedResultType: result.source_type,
+        relevanceLabel,
+        traceId: searchTraceId() ?? undefined,
+        metadataJson: JSON.stringify({
+          language_filter: languageFilter() || null,
+          source_type_filter: sourceTypeFilter() || null,
+          source_file: result.source_file,
+          chunk_index: result.chunk_index,
+          chunk_type: result.chunk_type,
+          relevance_score: result.relevance_score,
+        }),
+      });
+      setFeedbackStateByResult((prev) => ({
+        ...prev,
+        [id]: relevanceLabel === 'relevant' ? 'positive' : 'negative',
+      }));
+    } catch (_err) {
+      setFeedbackStateByResult((prev) => ({ ...prev, [id]: 'error' }));
     }
   };
 
@@ -244,6 +299,36 @@ function SearchPanel() {
               <div class="text-xs text-[var(--color-text-primary)] line-clamp-3 font-mono">
                 {result.text}
               </div>
+              <div class="mt-2 flex items-center justify-between">
+                <span class="text-[10px] text-[var(--color-text-secondary)]">Was this result useful?</span>
+                <div class="flex items-center gap-1">
+                  <button
+                    type="button"
+                    class="px-2 py-0.5 text-[10px] rounded border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-success)] hover:text-[var(--color-success)] disabled:opacity-50"
+                    onClick={() => submitFeedback(result, 'relevant')}
+                    disabled={feedbackStateByResult()[resultId(result)] === 'submitting'}
+                  >
+                    Helpful
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2 py-0.5 text-[10px] rounded border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-error)] hover:text-[var(--color-error)] disabled:opacity-50"
+                    onClick={() => submitFeedback(result, 'not_relevant')}
+                    disabled={feedbackStateByResult()[resultId(result)] === 'submitting'}
+                  >
+                    Not Helpful
+                  </button>
+                </div>
+              </div>
+              <Show when={feedbackStateByResult()[resultId(result)] === 'positive'}>
+                <div class="mt-1 text-[10px] text-[var(--color-success)]">Feedback saved.</div>
+              </Show>
+              <Show when={feedbackStateByResult()[resultId(result)] === 'negative'}>
+                <div class="mt-1 text-[10px] text-[var(--color-text-secondary)]">Feedback saved.</div>
+              </Show>
+              <Show when={feedbackStateByResult()[resultId(result)] === 'error'}>
+                <div class="mt-1 text-[10px] text-[var(--color-error)]">Feedback failed. Try again.</div>
+              </Show>
             </div>
           )}
         </For>

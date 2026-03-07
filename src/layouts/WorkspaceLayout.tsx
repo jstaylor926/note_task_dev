@@ -6,6 +6,7 @@ import TaskPanel from '../components/TaskPanel';
 import IndexingStatus from '../components/IndexingStatus';
 import WorkspaceSwitcher from '../components/WorkspaceSwitcher';
 import SearchPanel from '../components/SearchPanel';
+import DiagnosticsPanel from '../components/DiagnosticsPanel';
 import FileFinder from '../components/FileFinder';
 import UniversalSearch from '../components/UniversalSearch';
 import KnowledgeGraph from '../components/KnowledgeGraph';
@@ -148,8 +149,11 @@ function WorkspaceLayout() {
 
         {/* Right sidebar: Search */}
         <div class="border-l border-[var(--color-border)] flex flex-col min-h-0">
-          <div class="flex-1 overflow-auto">
+          <div class="flex-1 overflow-auto min-h-0">
             <SearchPanel />
+          </div>
+          <div class="h-[240px] shrink-0 overflow-hidden">
+            <DiagnosticsPanel />
           </div>
         </div>
       </div>
