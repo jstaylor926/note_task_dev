@@ -19,6 +19,22 @@ const INDEXABLE_EXTENSIONS: &[&str] = &[
 /// Debounce window for grouping rapid file events.
 const DEBOUNCE_MS: u64 = 300;
 
+fn detect_current_git_branch(project_root: &str) -> String {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(project_root)
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "main".to_string())
+}
+
 fn has_indexable_extension(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -146,6 +162,10 @@ fn process_file_with_events(app_handle: AppHandle, path: PathBuf) {
         // 3. File is new or changed — emit queued event
         {
             let mut indexing = state.indexing.lock().unwrap();
+            if indexing.is_idle() {
+                indexing.total_queued = 0;
+                indexing.completed = 0;
+            }
             indexing.total_queued += 1;
             indexing.current_file = Some(file_path_str.clone());
             let _ = app_handle.emit(events::INDEXING_PROGRESS, events::IndexingProgressPayload {
@@ -163,8 +183,16 @@ fn process_file_with_events(app_handle: AppHandle, path: PathBuf) {
             let _ = db::delete_entities_by_source_file(&conn, &file_path_str);
         }
 
-        let git_branch = state.git_branch.clone();
-        match ingest::process_file(&path, &sidecar_url, &git_branch).await {
+        let source_type = ingest::detect_source_type(&path).to_string();
+        let git_branch = detect_current_git_branch(&state.project_root);
+        match ingest::process_file_content(
+            &file_path_str,
+            &content,
+            language,
+            &source_type,
+            &sidecar_url,
+            &git_branch,
+        ).await {
             Ok(resp) => {
                 log::info!("Processed file {:?} ({} chunks, {} entities)", path, resp.chunk_count, resp.entities.len());
 
@@ -214,8 +242,8 @@ fn process_file_with_events(app_handle: AppHandle, path: PathBuf) {
                                     .is_none()
                                 {
                                     let task_content = format!(
-                                        "{}:{} — {}",
-                                        file_path_str, todo.line_number, todo.marker
+                                        "{}:{} — {} (confidence {:.2})",
+                                        file_path_str, todo.line_number, todo.marker, todo.confidence
                                     );
                                     let _ = db::create_task(
                                         &conn,
@@ -353,10 +381,10 @@ pub async fn start_watcher(app_handle: AppHandle, watch_path: PathBuf) {
                         if has_indexable_extension(&path) {
                             pending.insert(path, (DebouncedAction::Delete, now));
                         }
-                    } else if event.kind.is_modify() || event.kind.is_create() {
-                        if should_index_with_gitignore(&path, &gitignore) {
-                            pending.insert(path, (DebouncedAction::Upsert, now));
-                        }
+                    } else if (event.kind.is_modify() || event.kind.is_create())
+                        && should_index_with_gitignore(&path, &gitignore)
+                    {
+                        pending.insert(path, (DebouncedAction::Upsert, now));
                     }
                 }
             }

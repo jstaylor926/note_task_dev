@@ -32,6 +32,26 @@ export interface SearchResponse {
   query: string;
 }
 
+export type ContextStrategy = 'none' | 'session' | 'retrieval' | 'session_plus_retrieval';
+export type SearchMode = 'vector' | 'hybrid';
+
+export interface SessionCaptureInputV2 {
+  trigger: 'exit' | 'manual' | 'periodic' | 'profile_switch';
+  open_files: string[];
+  active_file?: string;
+  terminal_cwd?: string;
+  include_recent_terminal?: boolean;
+}
+
+export interface HybridSearchOptions {
+  mode: SearchMode;
+  limit: number;
+  source_types?: Array<'code' | 'note' | 'task' | 'terminal'>;
+  file_path_prefix?: string;
+  git_branch?: string;
+  rerank?: boolean;
+}
+
 export interface SearchFilters {
   language?: string;
   source_type?: string;
@@ -56,6 +76,16 @@ export async function semanticSearch(
     query,
     limit,
     ...filters,
+  });
+}
+
+export async function hybridSearch(
+  query: string,
+  options: HybridSearchOptions,
+): Promise<SearchResponse & { mode: SearchMode }> {
+  return invoke<SearchResponse & { mode: SearchMode }>('hybrid_search', {
+    query,
+    options,
   });
 }
 
@@ -112,6 +142,19 @@ export async function captureSession(trigger = 'manual'): Promise<string> {
   return invoke<string>('session_capture', { trigger });
 }
 
+export async function captureSessionV2(input: SessionCaptureInputV2): Promise<string> {
+  return invoke<string>('session_capture_v2', { input });
+}
+
+export async function sendChatMessageStream(
+  messages: ChatMessage[],
+  model?: string,
+): Promise<{ chunks: Array<{ delta: string }>; done: boolean }> {
+  return invoke('chat_send_stream', {
+    request: { messages, model },
+  });
+}
+
 // ─── Workspace Profiles ──────────────────────────────────────────────
 
 export interface WorkspaceProfile {
@@ -145,6 +188,23 @@ export async function createProfile(
 
 export async function activateProfile(id: string): Promise<boolean> {
   return invoke<boolean>('profile_activate', { id });
+}
+
+export async function listModels(): Promise<{
+  default_model: string;
+  models: Array<Record<string, unknown>>;
+}> {
+  return invoke('model_list');
+}
+
+export async function setProfileDefaultModel(
+  profileId: string,
+  modelId: string,
+): Promise<boolean> {
+  return invoke<boolean>('model_set_profile_default', {
+    profileId,
+    modelId,
+  });
 }
 
 // ─── Intelligent Terminal ───────────────────────────────────────────

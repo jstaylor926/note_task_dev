@@ -5,6 +5,7 @@ mod commands;
 mod db;
 mod events;
 mod sidecar;
+mod sidecar_client;
 mod watcher;
 mod ingest;
 mod pty;
@@ -25,6 +26,12 @@ pub struct IndexingState {
     pub total_queued: usize,
     pub completed: usize,
     pub current_file: Option<String>,
+}
+
+impl Default for IndexingState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IndexingState {
@@ -93,24 +100,54 @@ fn main() {
             // 3. Resolve sidecar directory
             // In dev mode, the sidecar is relative to the project root
             // TAURI_DEV is set during `tauri dev`; in production, use bundled path
-            let sidecar_dir = if cfg!(debug_assertions) {
-                // During development, find the sidecar directory relative to the Tauri source
+            let (sidecar_dir, sidecar_binary) = if cfg!(debug_assertions) {
+                // During development, run the sidecar via `uv run`.
                 let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-                manifest_dir.parent().unwrap().join("sidecar")
+                (manifest_dir.parent().unwrap().join("sidecar"), None)
             } else {
-                // In production, the sidecar would be bundled alongside the app as a resource
-                app.path()
+                // In production, prefer bundled executable sidecar artifact.
+                let resource_dir = app
+                    .path()
                     .resolve("sidecar", tauri::path::BaseDirectory::Resource)
-                    .expect("failed to resolve production sidecar path")
+                    .expect("failed to resolve production sidecar path");
+
+                let binary_name = if cfg!(target_os = "windows") {
+                    "cortex-sidecar.exe"
+                } else {
+                    "cortex-sidecar"
+                };
+
+                let candidate_paths = [
+                    resource_dir.join("bin").join(binary_name),
+                    resource_dir.join(binary_name),
+                ];
+
+                let binary = candidate_paths
+                    .iter()
+                    .find(|p| p.exists())
+                    .cloned();
+
+                if binary.is_none() {
+                    log::warn!(
+                        "Bundled sidecar binary not found in {:?}; falling back to uv mode",
+                        resource_dir
+                    );
+                }
+
+                (resource_dir, binary)
             };
 
-            log::info!("Sidecar directory: {:?}", sidecar_dir);
+            log::info!(
+                "Sidecar directory: {:?}, binary: {:?}",
+                sidecar_dir,
+                sidecar_binary
+            );
 
             // 4. Spawn Python sidecar
             let sidecar_port = 9400u16;
             let sidecar_url = format!("http://127.0.0.1:{}", sidecar_port);
             let mut sidecar_manager =
-                sidecar::SidecarManager::new(sidecar_port, sidecar_dir);
+                sidecar::SidecarManager::new(sidecar_port, sidecar_dir, sidecar_binary);
 
             if let Err(e) = sidecar_manager.start() {
                 log::error!("Failed to start sidecar: {}", e);
@@ -267,6 +304,7 @@ fn main() {
             commands::health_check,
             commands::get_app_status,
             commands::semantic_search,
+            commands::hybrid_search,
             commands::get_indexing_status,
             commands::universal_search,
             pty_commands::pty_create,
@@ -309,15 +347,19 @@ fn main() {
             commands::revoke_paired_device,
             commands::device_delete,
             commands::session_capture,
+            commands::session_capture_v2,
             commands::get_latest_session,
             commands::session_history_list,
             commands::chat_history_list,
             commands::chat_send,
+            commands::chat_send_stream,
             commands::profile_list,
             commands::profile_create,
             commands::profile_activate,
             commands::profile_update,
             commands::profile_delete,
+            commands::model_list,
+            commands::model_set_profile_default,
             commands::terminal_translate,
             commands::terminal_resolve,
             commands::terminal_command_persist,

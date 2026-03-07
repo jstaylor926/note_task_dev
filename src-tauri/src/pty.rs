@@ -36,6 +36,12 @@ pub struct PtyManager {
     sessions: HashMap<String, PtySession>,
 }
 
+impl Default for PtyManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PtyManager {
     pub fn new() -> Self {
         Self {

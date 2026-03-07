@@ -91,6 +91,11 @@ _CODE_NODE_TYPES: dict[str, set[str]] = {
         "lexical_declaration", "variable_declaration", "interface_declaration",
         "type_alias_declaration"
     },
+    "tsx": {
+        "function_declaration", "class_declaration", "export_statement",
+        "lexical_declaration", "variable_declaration", "interface_declaration",
+        "type_alias_declaration"
+    },
     "rust": {
         "function_item", "struct_item", "enum_item", "impl_item",
         "trait_item", "mod_item", "const_item", "static_item",
@@ -98,8 +103,8 @@ _CODE_NODE_TYPES: dict[str, set[str]] = {
     },
 }
 
-# Maps language name to a callable that returns the tree-sitter language capsule
-_TS_LANGUAGES: dict[str, object] = {}
+# Maps language name to tree-sitter language objects.
+_TS_LANGUAGES: dict[str, Language] = {}
 
 
 def _get_ts_language(lang: str) -> Language | None:
@@ -117,20 +122,20 @@ def _get_ts_language(lang: str) -> Language | None:
     capsule = None
     try:
         if lang == "python":
-            import tree_sitter_python as mod
-            capsule = mod.language()
+            import tree_sitter_python as ts_python
+            capsule = ts_python.language()
         elif lang == "javascript":
-            import tree_sitter_javascript as mod
-            capsule = mod.language()
+            import tree_sitter_javascript as ts_javascript
+            capsule = ts_javascript.language()
         elif lang == "typescript":
-            import tree_sitter_typescript as mod
-            capsule = mod.language_typescript()
+            import tree_sitter_typescript as ts_typescript
+            capsule = ts_typescript.language_typescript()
         elif lang == "tsx":
-            import tree_sitter_typescript as mod
-            capsule = mod.language_tsx()
+            import tree_sitter_typescript as ts_typescript
+            capsule = ts_typescript.language_tsx()
         elif lang == "rust":
-            import tree_sitter_rust as mod
-            capsule = mod.language()
+            import tree_sitter_rust as ts_rust
+            capsule = ts_rust.language()
     except ImportError:
         logger.warning("tree-sitter grammar for %s not installed", lang)
         return None

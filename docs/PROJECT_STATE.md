@@ -1,12 +1,13 @@
 # Cortex: Complete Project State Document
 
-> **Generated:** 2026-02-28 (updated)
+> **Generated:** 2026-02-28 (base), **verified update:** 2026-03-07
 > **Purpose:** Comprehensive reference for any AI agent or developer working on this project. Covers architecture, implementation status, known bugs, conventions, and the full roadmap.
 
 ---
 
 ## Table of Contents
 
+0. [Current Verified Snapshot (2026-03-07)](#0-current-verified-snapshot-2026-03-07)
 1. [Project Identity](#1-project-identity)
 2. [Architecture Overview](#2-architecture-overview)
 3. [Build & Run Requirements](#3-build--run-requirements)
@@ -25,6 +26,40 @@
 16. [Project Strategy Documentation Map](#16-project-strategy-documentation-map)
 
 ---
+
+## 0. Current Verified Snapshot (2026-03-07)
+
+### Quality Gates
+
+- Frontend tests: `216/216` passing (`pnpm test`)
+- Rust tests: `128/128` passing (`cd src-tauri && cargo test`)
+- Sidecar tests: `88/88` passing (`cd sidecar && CORTEX_TEST_MODE=1 uv run pytest`)
+- Rust lint gate passing: `cargo clippy --all-targets -- -D warnings`
+- Sidecar static checks passing:
+  - `ruff check cortex_sidecar tests --select E9,F63,F7,F82`
+  - `mypy cortex_sidecar --ignore-missing-imports`
+
+### Productionization Progress
+
+- Frontend baseline stabilized to green and wired into CI.
+- Added CI workflow for typecheck/tests/lint across frontend, Rust, and sidecar.
+- Hardened sidecar filtering on `/search` and `/embeddings` delete for injection safety.
+- Added startup LanceDB vector index creation attempt and health logging.
+- Added Rust-side timeout/retry/circuit-breaker policy for sidecar calls.
+- Tightened filesystem commands to workspace boundaries.
+- Added remote API CORS allowlist defaults and security audit-log events.
+- Added migration-managed tables: `llm_runs`, `retrieval_feedback`, `app_audit_log`.
+- Added new API/IPC surfaces:
+  - Rust commands: `session_capture_v2`, `hybrid_search`, `chat_send_stream`, `model_list`, `model_set_profile_default`
+  - Sidecar endpoints: `/api/v1/models`, `/api/v1/rag/query`, extended `/api/v1/session/synthesis`
+- Added sidecar executable build automation:
+  - local script: `sidecar/scripts/build_sidecar_binary.py`
+  - CI workflow: `.github/workflows/sidecar-binary.yml` (cross-OS artifact build)
+
+### Sidecar Launch Modes
+
+- Dev mode: `uv run --directory <sidecar_dir> python -m cortex_sidecar.main ...`
+- Production mode: prefer bundled executable (`sidecar/bin/cortex-sidecar[.exe]`), fallback to `uv run` if not bundled.
 
 ## 1. Project Identity
 
@@ -96,18 +131,26 @@ Frontend (SolidJS + Vite)         Rust Backend (Tauri v2)           Python Sidec
 | Action | Command | Notes |
 |---|---|---|
 | Install JS deps | `pnpm install` | From project root |
-| Install Python deps | `cd sidecar && uv sync` | Creates `.venv` in sidecar/ |
+| Install Python deps | `cd sidecar && uv sync --extra dev` | Creates `.venv` in sidecar/ with test/lint tooling |
 | Dev mode (full app) | `pnpm tauri dev` | Starts Vite + compiles Rust + launches app |
 | Frontend only | `pnpm dev` | Vite dev server on localhost:1420 |
 | Build release | `pnpm tauri build` | Produces native binary |
 | Run frontend tests | `pnpm test` | Vitest with jsdom |
 | Watch frontend tests | `pnpm test:watch` | |
 | Run Rust tests | `cd src-tauri && cargo test` | |
-| Run Python tests | `cd sidecar && uv run pytest` | |
+| Run Python tests | `cd sidecar && CORTEX_TEST_MODE=1 uv run pytest` | Test mode skips model loading |
+| Typecheck frontend | `pnpm typecheck` | Uses `tsconfig.typecheck.json` |
+| Lint Rust | `cd src-tauri && cargo clippy --all-targets -- -D warnings` | Required in CI |
+| Lint/typecheck sidecar | `cd sidecar && uv run ruff check cortex_sidecar tests --select E9,F63,F7,F82 && uv run mypy cortex_sidecar --ignore-missing-imports` | Required in CI |
+| Aggregate checks | `pnpm check` | Runs typecheck + all 3 test suites |
 
 ### Important: Sidecar Startup
 
-The Rust backend spawns the sidecar via `uv run --directory {sidecar_dir} python -m cortex_sidecar.main --port 9400 --host 127.0.0.1`. The sidecar loads the `all-MiniLM-L6-v2` sentence transformer model (~80 MB, MPS/CUDA/CPU), which takes 1-3 seconds. A health monitor loop checks `/health` every 10 seconds after a 3-second initial wait.
+The Rust backend supports two startup modes:
+- Dev mode: `uv run --directory {sidecar_dir} python -m cortex_sidecar.main --port 9400 --host 127.0.0.1`
+- Production mode: execute bundled binary resource (`sidecar/bin/cortex-sidecar[.exe]`) when present
+
+The sidecar loads the `all-MiniLM-L6-v2` sentence transformer model (~80 MB, MPS/CUDA/CPU), which takes 1-3 seconds. A health monitor loop checks `/health` every 10 seconds after a 3-second initial wait.
 
 ---
 

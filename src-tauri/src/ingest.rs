@@ -55,7 +55,7 @@ pub fn detect_language(path: &Path) -> &'static str {
 }
 
 /// Detect the source type from the file path and extension.
-fn detect_source_type(path: &Path) -> &'static str {
+pub fn detect_source_type(path: &Path) -> &'static str {
     let path_str = path.to_string_lossy();
 
     // Test files
@@ -95,10 +95,15 @@ pub async fn process_terminal_output(
         git_branch: git_branch.to_string(),
     };
 
+    send_ingest_request(&req, sidecar_url).await
+}
+
+async fn send_ingest_request(req: &IngestRequest, sidecar_url: &str) -> anyhow::Result<IngestResponse> {
     let client = reqwest::Client::new();
     let url = format!("{}/ingest", sidecar_url);
-
-    let res = client.post(url).json(&req).send().await?;
+    let res = crate::sidecar_client::send_with_policy(|| client.post(url.clone()).json(&req))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     if !res.status().is_success() {
         let err = res.text().await?;
@@ -109,8 +114,28 @@ pub async fn process_terminal_output(
     Ok(result)
 }
 
+/// Ingest already-loaded file content to avoid duplicate disk reads in the watcher.
+pub async fn process_file_content(
+    file_path: &str,
+    content: &str,
+    language: &str,
+    source_type: &str,
+    sidecar_url: &str,
+    git_branch: &str,
+) -> anyhow::Result<IngestResponse> {
+    let req = IngestRequest {
+        file_path: file_path.to_string(),
+        content: content.to_string(),
+        language: language.to_string(),
+        source_type: source_type.to_string(),
+        git_branch: git_branch.to_string(),
+    };
+    send_ingest_request(&req, sidecar_url).await
+}
+
 /// Send a file's content to the sidecar /ingest endpoint for chunking + embedding.
 /// Returns the full ingest response including chunk count and extracted entities.
+#[allow(dead_code)]
 pub async fn process_file(path: &Path, sidecar_url: &str, git_branch: &str) -> anyhow::Result<IngestResponse> {
     if !path.is_file() {
         return Ok(IngestResponse { chunk_count: 0, entities: vec![] });
@@ -124,26 +149,15 @@ pub async fn process_file(path: &Path, sidecar_url: &str, git_branch: &str) -> a
     let language = detect_language(path).to_string();
     let source_type = detect_source_type(path).to_string();
 
-    let req = IngestRequest {
-        file_path: path.to_string_lossy().to_string(),
-        content,
-        language,
-        source_type,
-        git_branch: git_branch.to_string(),
-    };
-
-    let client = reqwest::Client::new();
-    let url = format!("{}/ingest", sidecar_url);
-
-    let res = client.post(url).json(&req).send().await?;
-
-    if !res.status().is_success() {
-        let err = res.text().await?;
-        anyhow::bail!("Failed to ingest file: {}", err);
-    }
-
-    let resp: IngestResponse = res.json().await?;
-    Ok(resp)
+    let file_path = path.to_string_lossy().to_string();
+    process_file_content(
+        &file_path,
+        &content,
+        &language,
+        &source_type,
+        sidecar_url,
+        git_branch,
+    ).await
 }
 
 /// Delete all embeddings for a given file from the sidecar.
@@ -151,11 +165,11 @@ pub async fn delete_file_embeddings(file_path: &str, sidecar_url: &str) -> anyho
     let client = reqwest::Client::new();
     let url = format!("{}/embeddings", sidecar_url);
 
-    let res = client
-        .delete(&url)
-        .query(&[("source_file", file_path)])
-        .send()
-        .await?;
+    let res = crate::sidecar_client::send_with_policy(|| {
+        client.delete(&url).query(&[("source_file", file_path)])
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!(e))?;
 
     if !res.status().is_success() {
         let err = res.text().await?;
@@ -201,7 +215,9 @@ pub async fn extract_references(
     let client = reqwest::Client::new();
     let url = format!("{}/extract-references", sidecar_url);
 
-    let res = client.post(url).json(&req).send().await?;
+    let res = crate::sidecar_client::send_with_policy(|| client.post(url.clone()).json(&req))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     if !res.status().is_success() {
         let err = res.text().await?;
@@ -254,11 +270,11 @@ pub async fn extract_code_todos(
 
     let client = reqwest::Client::new();
     let url = format!("{}/extract-code-todos", sidecar_url);
-    let res = client
-        .post(url)
-        .json(&Req { source, file_path })
-        .send()
-        .await?;
+    let res = crate::sidecar_client::send_with_policy(|| {
+        client.post(url.clone()).json(&Req { source, file_path })
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!(e))?;
 
     if !res.status().is_success() {
         let err = res.text().await?;
@@ -281,11 +297,9 @@ pub async fn extract_terminal_tasks(
 
     let client = reqwest::Client::new();
     let url = format!("{}/extract-terminal-tasks", sidecar_url);
-    let res = client
-        .post(url)
-        .json(&Req { output })
-        .send()
-        .await?;
+    let res = crate::sidecar_client::send_with_policy(|| client.post(url.clone()).json(&Req { output }))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     if !res.status().is_success() {
         let err = res.text().await?;
@@ -323,7 +337,9 @@ pub async fn embed_note(
     let client = reqwest::Client::new();
     let url = format!("{}/embed", sidecar_url);
 
-    let res = client.post(url).json(&req).send().await?;
+    let res = crate::sidecar_client::send_with_policy(|| client.post(url.clone()).json(&req))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     if !res.status().is_success() {
         let err = res.text().await?;

@@ -93,14 +93,12 @@ impl OscParser {
                         self.osc_buf.pop();
                         self.handle_osc(&mut output, &mut events);
                         self.state = State::Normal;
+                    } else if self.osc_buf.len() >= MAX_OSC_BUFFER_SIZE {
+                        // Buffer limit exceeded — discard and reset
+                        self.osc_buf.clear();
+                        self.state = State::Normal;
                     } else {
-                        if self.osc_buf.len() >= MAX_OSC_BUFFER_SIZE {
-                            // Buffer limit exceeded — discard and reset
-                            self.osc_buf.clear();
-                            self.state = State::Normal;
-                        } else {
-                            self.osc_buf.push(byte);
-                        }
+                        self.osc_buf.push(byte);
                     }
                 }
             }

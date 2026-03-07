@@ -9,6 +9,14 @@
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build"
   },
+  "bundle": {
+    "resources": [
+      "../sidecar/bin",
+      "../sidecar/cortex_sidecar/**",
+      "../sidecar/pyproject.toml",
+      "../sidecar/uv.lock"
+    ]
+  },
   "app": {
     "windows": [
       {

@@ -16,6 +16,12 @@ pub struct LspManager {
     pub sessions: Arc<std::sync::Mutex<HashMap<String, LspSession>>>,
 }
 
+impl Default for LspManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LspManager {
     pub fn new() -> Self {
         Self {
@@ -78,8 +84,8 @@ impl LspManager {
                     break;
                 }
 
-                if line.starts_with("Content-Length: ") {
-                    let len: usize = line["Content-Length: ".len()..]
+                if let Some(stripped) = line.strip_prefix("Content-Length: ") {
+                    let len: usize = stripped
                         .trim()
                         .parse()
                         .unwrap_or(0);

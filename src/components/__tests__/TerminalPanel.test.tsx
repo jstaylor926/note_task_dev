@@ -55,11 +55,7 @@ describe('TerminalPanel', () => {
     (invoke as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
     const { default: TerminalPanel } = await import('../TerminalPanel');
     const { container } = render(() => <TerminalPanel />);
-    const buttons = container.querySelectorAll('button');
-    const plusButton = Array.from(buttons).find(
-      (b) => b.textContent?.trim() === '+',
-    );
-    expect(plusButton).toBeTruthy();
+    expect(container.querySelector('[data-testid="terminal-add-tab"]')).toBeTruthy();
   });
 
   it('renders with full height and width', async () => {
@@ -75,40 +71,21 @@ describe('TerminalPanel', () => {
     (invoke as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
     const { default: TerminalPanel } = await import('../TerminalPanel');
     const { container } = render(() => <TerminalPanel />);
-    
-    // Initial state: 1 tab
-    let buttons = container.querySelectorAll('button');
-    const plusButton = Array.from(buttons).find(
-      (b) => b.textContent?.trim() === '+',
-    );
-    
-    // Should have 1 tab + 1 add button
-    expect(buttons.length).toBe(2); 
-    
-    if (plusButton) {
-      fireEvent.click(plusButton);
-    }
-    
-    // After click: 2 tabs + 1 add button
-    buttons = container.querySelectorAll('button');
-    expect(buttons.length).toBe(3);
+
+    expect(container.querySelectorAll('[data-testid^="terminal-tab-"]').length).toBe(1);
+    const plusButton = container.querySelector('[data-testid="terminal-add-tab"]') as HTMLElement;
+    fireEvent.click(plusButton);
+    expect(container.querySelectorAll('[data-testid^="terminal-tab-"]').length).toBe(2);
   });
 
   it('handles Cmd+T shortcut to create a new tab', async () => {
     (invoke as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
     const { default: TerminalPanel } = await import('../TerminalPanel');
     const { container } = render(() => <TerminalPanel />);
-    
-    // Initial state: 1 tab
-    let buttons = container.querySelectorAll('button');
-    expect(buttons.length).toBe(2); // 1 tab + 1 add button
-    
-    // Simulate Cmd+T
+
+    expect(container.querySelectorAll('[data-testid^="terminal-tab-"]').length).toBe(1);
     fireEvent.keyDown(document, { key: 't', metaKey: true });
-    
-    // After shortcut: 2 tabs + 1 add button
-    buttons = container.querySelectorAll('button');
-    expect(buttons.length).toBe(3);
+    expect(container.querySelectorAll('[data-testid^="terminal-tab-"]').length).toBe(2);
   });
 
   it('handles Cmd+D shortcut to split pane vertically', async () => {

@@ -49,3 +49,40 @@ def test_search_endpoint(client):
     assert "results" in response.json()
     assert isinstance(response.json()["results"], list)
     assert len(response.json()["results"]) > 0
+
+
+def test_models_endpoint(client):
+    response = client.get("/api/v1/models")
+    assert response.status_code == 200
+    body = response.json()
+    assert "default_model" in body
+    assert isinstance(body["models"], list)
+
+
+def test_rag_query_endpoint(client):
+    client.post(
+        "/ingest",
+        json={
+            "file_path": "src/main.rs",
+            "content": "fn main() { println!(\"hello\"); }",
+            "language": "rust",
+            "source_type": "code",
+            "git_branch": "main",
+        },
+    )
+    response = client.post(
+        "/api/v1/rag/query",
+        json={
+            "query": "main function",
+            "limit": 5,
+            "mode": "hybrid",
+            "rerank": True,
+            "source_types": ["code"],
+            "git_branch": "main",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "hybrid"
+    assert isinstance(body["results"], list)
+    assert len(body["results"]) >= 1

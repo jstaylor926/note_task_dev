@@ -8,8 +8,14 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:rust": "cd src-tauri && cargo test",
+    "test:py": "cd sidecar && CORTEX_TEST_MODE=1 uv run pytest",
+    "lint:rust": "cd src-tauri && cargo clippy --all-targets -- -D warnings",
+    "lint:py": "cd sidecar && uv run ruff check cortex_sidecar tests --select E9,F63,F7,F82 && uv run mypy cortex_sidecar --ignore-missing-imports",
+    "check": "pnpm typecheck && pnpm test && pnpm test:rust && pnpm test:py"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",

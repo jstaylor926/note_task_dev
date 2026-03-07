@@ -27,7 +27,7 @@ function UniversalSearch(props: UniversalSearchProps) {
 
   const quickActions = () => {
     const q = query().trim();
-    if (!q) return [];
+    if (!q || !hasSearched()) return [];
     return [
       {
         id: 'action-create-task',
@@ -41,7 +41,12 @@ function UniversalSearch(props: UniversalSearchProps) {
     ] as UniversalSearchResult[];
   };
 
-  const allItems = () => [...results(), ...quickActions()];
+  const allItems = () => {
+    if (!query().trim()) {
+      return [];
+    }
+    return [...results(), ...quickActions()];
+  };
 
   onMount(() => {
     inputRef?.focus();
@@ -155,7 +160,16 @@ function UniversalSearch(props: UniversalSearchProps) {
 
                 {/* Title and snippet */}
                 <div class="flex-1 min-w-0">
-                  <div class="text-sm font-medium truncate leading-tight">{result.title}</div>
+                  <div class="flex items-center gap-2">
+                    <div class="text-sm font-medium truncate leading-tight">{result.title}</div>
+                    <span
+                      class={`text-[9px] shrink-0 ${
+                        index() === selectedIndex() ? 'text-white/80' : 'text-[var(--color-text-secondary)]'
+                      }`}
+                    >
+                      {result.result_type}
+                    </span>
+                  </div>
                   <Show when={result.snippet}>
                     <div class={`text-[11px] truncate mt-0.5 ${
                       index() === selectedIndex() ? 'text-white/80' : 'text-[var(--color-text-secondary)]'
@@ -188,7 +202,7 @@ function UniversalSearch(props: UniversalSearchProps) {
 
           <Show when={query().length === 0}>
             <div class="px-4 py-12 text-center">
-              <div class="text-sm font-medium text-[var(--color-text-primary)] mb-1">Search Everything</div>
+              <div class="text-sm font-medium text-[var(--color-text-primary)] mb-1">Type to search</div>
               <div class="text-xs text-[var(--color-text-secondary)]">Search through your code, notes, tasks and history.</div>
             </div>
           </Show>

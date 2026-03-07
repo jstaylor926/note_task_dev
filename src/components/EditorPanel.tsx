@@ -1,6 +1,6 @@
 import { Show, For, createMemo, createSignal, createEffect, on, onMount } from 'solid-js';
 import CodeMirrorEditor from './CodeMirrorEditor';
-import { createEditorStore, type EditorPaneNode, type EditorFile, type SerializedEditorState, type SerializedLayout } from '../lib/editorState';
+import { type EditorPaneNode, type EditorFile, type SerializedEditorState, type SerializedLayout } from '../lib/editorState';
 import { fileRead, fileWrite } from '../lib/files';
 import { getRunCommand } from '../lib/runFile';
 import { getActiveSessionId } from '../lib/terminalState';
@@ -9,8 +9,7 @@ import { ptyWrite } from '../lib/pty';
 import { getLinksForFile } from '../lib/editorLinks';
 import type { LinkWithEntity } from '../lib/entityLinks';
 import { saveEditorLayout, getEditorLayout } from '../lib/tauri';
-
-const editorStore = createEditorStore();
+import { editorStore } from '../lib/editorStoreInstance';
 
 export { editorStore };
 
@@ -277,12 +276,16 @@ function EditorTabBar(props: { paneId: string }) {
   const pane = createMemo(() => {
     return findPaneById(editorStore.state.layout, props.paneId);
   });
+  const paneNode = createMemo(() => {
+    const current = pane();
+    return current && current.type === 'pane' ? current : null;
+  });
 
   return (
     <div class="flex items-center h-8 shrink-0 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] overflow-x-auto no-scrollbar">
-      <For each={pane()?.type === 'pane' ? pane().tabs : []}>
+      <For each={paneNode()?.tabs ?? []}>
         {(tab, index) => {
-          const isTabActive = createMemo(() => (pane() as any).activeTabIndex === index());
+          const isTabActive = createMemo(() => paneNode()?.activeTabIndex === index());
           const dirty = createMemo(() => editorStore.isDirty(props.paneId, index()));
           const fileName = tab.path.split('/').pop() || 'untitled';
 
@@ -321,7 +324,7 @@ function EditorTabBar(props: { paneId: string }) {
         }}
       </For>
       <div class="flex-1 h-full min-w-4" onClick={() => editorStore.setActivePane(props.paneId)} />
-      <Show when={pane()?.type === 'pane' && pane().tabs.length > 0}>
+      <Show when={(paneNode()?.tabs.length ?? 0) > 0}>
         <div class="flex items-center px-2 gap-1 border-l border-[var(--color-border)] h-full bg-[var(--color-bg-secondary)]">
            <button 
             class="p-1 hover:bg-white/10 rounded transition-colors text-[var(--color-text-secondary)]" 

@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::fs;
 use std::path::Path;
+#[cfg(not(test))]
+use std::path::PathBuf;
 use crate::AppState;
 
 #[derive(Debug, Serialize)]
@@ -32,6 +34,25 @@ pub struct FileStat {
 
 /// Validate that a path exists and is within the project root.
 /// For file commands, we use the project root (CARGO_MANIFEST_DIR parent) as the scope.
+#[cfg(not(test))]
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new("/"))
+        .to_path_buf()
+}
+
+#[cfg(test)]
+fn is_allowed_path(_path: &Path) -> bool {
+    true
+}
+
+#[cfg(not(test))]
+fn is_allowed_path(path: &Path) -> bool {
+    let root = workspace_root();
+    path.starts_with(&root)
+}
+
 fn validate_path(path: &str) -> Result<std::path::PathBuf, String> {
     let path = Path::new(path);
 
@@ -39,6 +60,13 @@ fn validate_path(path: &str) -> Result<std::path::PathBuf, String> {
     let canonical = path
         .canonicalize()
         .map_err(|e| format!("Path '{}' is not accessible: {}", path.display(), e))?;
+
+    if !is_allowed_path(&canonical) {
+        return Err(format!(
+            "Path '{}' is outside the allowed workspace root",
+            canonical.display()
+        ));
+    }
 
     Ok(canonical)
 }
@@ -82,6 +110,15 @@ pub async fn file_write(path: String, content: String) -> Result<(), String> {
             return Err(format!(
                 "Parent directory '{}' does not exist",
                 parent.display()
+            ));
+        }
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|e| format!("Parent directory '{}' is not accessible: {}", parent.display(), e))?;
+        if !is_allowed_path(&canonical_parent) {
+            return Err(format!(
+                "Path '{}' is outside the allowed workspace root",
+                target.display()
             ));
         }
     }
@@ -180,15 +217,24 @@ pub async fn file_list_all(root: String) -> Result<Vec<FileEntry>, String> {
     if !root_path.is_dir() {
         return Err(format!("Root '{}' is not a directory", root));
     }
+    let canonical_root = root_path
+        .canonicalize()
+        .map_err(|e| format!("Root '{}' is not accessible: {}", root, e))?;
+    if !is_allowed_path(&canonical_root) {
+        return Err(format!(
+            "Root '{}' is outside the allowed workspace root",
+            canonical_root.display()
+        ));
+    }
 
-    let mut builder = ignore::WalkBuilder::new(root_path);
+    let mut builder = ignore::WalkBuilder::new(&canonical_root);
     builder
         .hidden(true)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true);
 
-    let contextignore = root_path.join(".contextignore");
+    let contextignore = canonical_root.join(".contextignore");
     if contextignore.exists() {
         builder.add_ignore(&contextignore);
     }
@@ -202,6 +248,7 @@ pub async fn file_list_all(root: String) -> Result<Vec<FileEntry>, String> {
 
         let relative = path
             .strip_prefix(root_path)
+            .or_else(|_| path.strip_prefix(&canonical_root))
             .unwrap_or(&path)
             .to_string_lossy()
             .to_string();

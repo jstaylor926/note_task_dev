@@ -8,7 +8,7 @@
 
 use axum::{
     extract::{Path as AxumPath, Query, State, ws::{Message, WebSocket, WebSocketUpgrade}},
-    http::StatusCode,
+    http::{header, Method, StatusCode},
     middleware,
     routing::{delete, get, post},
     Json, Router,
@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, IpAddr, UdpSocket};
 use std::path::PathBuf;
 use tauri::Listener;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::db;
 use crate::pty::detect_default_shell;
@@ -133,8 +133,38 @@ pub fn build_router(state: RemoteAppState) -> Router {
             state.clone(),
             remote_auth::auth_middleware,
         ))
-        .layer(CorsLayer::permissive())
+        .layer(build_cors_layer())
         .with_state(state)
+}
+
+fn build_cors_layer() -> CorsLayer {
+    let mut allowed_origins = vec![
+        "https://localhost".to_string(),
+        "https://127.0.0.1".to_string(),
+    ];
+
+    if let Ok(extra) = std::env::var("CORTEX_REMOTE_ALLOWED_ORIGINS") {
+        for origin in extra.split(',') {
+            let trimmed = origin.trim();
+            if !trimmed.is_empty() {
+                allowed_origins.push(trimmed.to_string());
+            }
+        }
+    }
+
+    let allowed = std::sync::Arc::new(allowed_origins);
+    let allow_origin = AllowOrigin::predicate(move |origin, _| {
+        origin
+            .to_str()
+            .ok()
+            .map(|candidate| allowed.iter().any(|allowed| allowed == candidate))
+            .unwrap_or(false)
+    });
+
+    CorsLayer::new()
+        .allow_origin(allow_origin)
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
 }
 
 // ─── Health ──────────────────────────────────────────────────────────
@@ -285,6 +315,19 @@ async fn verify_pin_handler(
                 Json(ErrorResponse::new("DB_ERROR", &e.to_string())),
             )
         })?;
+
+        let details = serde_json::json!({
+            "device_id": challenge.device_id,
+            "device_name": challenge.device_name,
+            "platform": challenge.platform,
+        }).to_string();
+        let _ = db::insert_app_audit_log(
+            &conn,
+            "remote_access.device_paired",
+            Some("pairing_flow"),
+            None,
+            Some(&details),
+        );
     }
 
     // Clear challenge and reset failures
@@ -844,7 +887,7 @@ async fn handle_terminal_socket(socket: WebSocket, session_id: String, state: Re
                             let engine = base64::engine::general_purpose::STANDARD;
                             if let Ok(decoded) = engine.decode(data_base64.as_bytes()) {
                                 let mut pty_mgr = pty_mgr_clone.lock().unwrap();
-                                let _ = pty_mgr.write(&sid_clone3, &decoded).unwrap_or_else(|e| {
+                                pty_mgr.write(&sid_clone3, &decoded).unwrap_or_else(|e| {
                                     log::error!("Failed to write to PTY from remote: {}", e);
                                 });
                             }

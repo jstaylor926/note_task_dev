@@ -14,17 +14,23 @@ pub struct SidecarManager {
     process: Option<Child>,
     port: u16,
     sidecar_dir: PathBuf,
+    sidecar_binary: Option<PathBuf>,
     restart_count: u32,
     max_restarts: u32,
     pub status: SidecarStatus,
 }
 
 impl SidecarManager {
-    pub fn new(port: u16, sidecar_dir: PathBuf) -> Self {
+    pub fn new(
+        port: u16,
+        sidecar_dir: PathBuf,
+        sidecar_binary: Option<PathBuf>,
+    ) -> Self {
         Self {
             process: None,
             port,
             sidecar_dir,
+            sidecar_binary,
             restart_count: 0,
             max_restarts: 3,
             status: SidecarStatus::Stopped,
@@ -50,19 +56,32 @@ impl SidecarManager {
 
         self.status = SidecarStatus::Starting;
 
-        let child = Command::new("uv")
-            .arg("run")
-            .arg("--directory")
-            .arg(&self.sidecar_dir)
-            .arg("python")
-            .arg("-m")
-            .arg("cortex_sidecar.main")
-            .arg("--port")
-            .arg(self.port.to_string())
-            .arg("--host")
-            .arg("127.0.0.1")
-            .spawn()
-            .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
+        let child = if let Some(binary_path) = self.sidecar_binary.as_ref() {
+            log::info!("Starting bundled sidecar binary: {:?}", binary_path);
+            Command::new(binary_path)
+                .current_dir(&self.sidecar_dir)
+                .arg("--port")
+                .arg(self.port.to_string())
+                .arg("--host")
+                .arg("127.0.0.1")
+                .spawn()
+                .map_err(|e| format!("Failed to spawn bundled sidecar binary: {}", e))?
+        } else {
+            log::info!("Starting sidecar via uv run from {:?}", self.sidecar_dir);
+            Command::new("uv")
+                .arg("run")
+                .arg("--directory")
+                .arg(&self.sidecar_dir)
+                .arg("python")
+                .arg("-m")
+                .arg("cortex_sidecar.main")
+                .arg("--port")
+                .arg(self.port.to_string())
+                .arg("--host")
+                .arg("127.0.0.1")
+                .spawn()
+                .map_err(|e| format!("Failed to spawn sidecar: {}", e))?
+        };
 
         log::info!("Sidecar process started with PID: {}", child.id());
         self.process = Some(child);

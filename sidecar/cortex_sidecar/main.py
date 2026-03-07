@@ -1,14 +1,19 @@
 import argparse
 import logging
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+import uuid
 
 import lancedb
 import pyarrow as pa
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 from cortex_sidecar.chunking import chunk_file, chunk_text
 from cortex_sidecar.routes.health import router as health_router
@@ -22,8 +27,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger("cortex-sidecar")
 
+SAFE_FILTER_VALUE_RE = re.compile(r"^[A-Za-z0-9_./:\\\- ]+$")
+
 # Global agent manager
 agent_manager = AgentManager()
+
+
+def sanitize_filter_value(field: str, value: str) -> str:
+    if not value:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "code": "INVALID_FILTER",
+                    "message": f"{field} cannot be empty",
+                    "retryable": False,
+                }
+            },
+        )
+    if not SAFE_FILTER_VALUE_RE.fullmatch(value):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "code": "INVALID_FILTER",
+                    "message": f"{field} contains unsupported characters",
+                    "retryable": False,
+                }
+            },
+        )
+    return value.replace("'", "''")
 
 
 def get_lancedb_schema() -> pa.Schema:
@@ -72,13 +105,6 @@ def get_data_dir() -> Path:
     else:
         return Path(os.environ.get("APPDATA", Path.home())) / "com.cortex.app"
 
-
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
-from datetime import datetime
-import uuid
-
 class EmbedRequest(BaseModel):
     text: str
     metadata: Optional[Dict[str, Any]] = None
@@ -124,6 +150,8 @@ async def lifespan(app: FastAPI):
     if "embeddings" not in db.list_tables().tables:
         logger.info("Creating 'embeddings' table")
         db.create_table("embeddings", schema=schema)
+    else:
+        logger.info("Using existing 'embeddings' table")
 
     app.state.lancedb = db
     app.state.lancedb_schema = schema
@@ -138,6 +166,18 @@ async def lifespan(app: FastAPI):
         from sentence_transformers import SentenceTransformer
         logger.info("Loading sentence-transformer model...")
         app.state.model = SentenceTransformer("all-MiniLM-L6-v2")
+
+    # Ensure vector index exists for faster ANN search.
+    try:
+        table = db.open_table("embeddings")
+        try:
+            table.create_index("vector")
+        except TypeError:
+            table.create_index(metric="cosine")
+        logger.info("LanceDB vector index ready on embeddings.vector")
+    except Exception as e:
+        # Non-fatal: some LanceDB versions may auto-manage index state.
+        logger.warning("Could not ensure LanceDB vector index: %s", e)
 
     # Register and start agents
     agent_manager.register_agent(ResearchDaemon())
@@ -287,10 +327,13 @@ async def delete_embeddings(source_file: str):
         HTTPException: If deletion fails.
     """
     try:
+        source_file = sanitize_filter_value("source_file", source_file)
         table = app.state.lancedb.open_table("embeddings")
         table.delete(f"source_file = '{source_file}'")
         logger.info("Deleted embeddings for %s", source_file)
         return {"status": "success", "source_file": source_file}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Delete failed for %s: %s", source_file, e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -334,14 +377,19 @@ async def search_embeddings(
         # Build filter conditions
         conditions = []
         if language:
+            language = sanitize_filter_value("language", language)
             conditions.append(f"language = '{language}'")
         if source_type:
+            source_type = sanitize_filter_value("source_type", source_type)
             conditions.append(f"source_type = '{source_type}'")
         if chunk_type:
+            chunk_type = sanitize_filter_value("chunk_type", chunk_type)
             conditions.append(f"chunk_type = '{chunk_type}'")
         if git_branch:
+            git_branch = sanitize_filter_value("git_branch", git_branch)
             conditions.append(f"git_branch = '{git_branch}'")
         if file_path_prefix:
+            file_path_prefix = sanitize_filter_value("file_path_prefix", file_path_prefix)
             conditions.append(f"source_file LIKE '{file_path_prefix}%'")
 
         search = table.search(vector).limit(limit)
@@ -363,6 +411,8 @@ async def search_embeddings(
                 r["relevance_score"] = 0.0
 
         return {"results": results, "query": query}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Search failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))

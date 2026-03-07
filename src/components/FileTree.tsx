@@ -2,7 +2,7 @@ import { onMount, onCleanup, For, Show, createMemo, createSignal } from 'solid-j
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { createFileTreeStore, type TreeNode } from '../lib/fileTreeState';
 import { getWorkspaceRoot, fileStat } from '../lib/files';
-import { editorStore } from './EditorPanel';
+import { editorStore } from '../lib/editorStoreInstance';
 
 const fileTreeStore = createFileTreeStore();
 

@@ -118,6 +118,7 @@ function TerminalPanel() {
           <For each={state.tabs}>
             {(tab, index) => (
               <button
+                data-testid={`terminal-tab-${index()}`}
                 class={`px-3 h-full text-xs flex items-center gap-1 border-r border-[var(--color-border)] ${
                   index() === state.activeTabIndex
                     ? 'bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]'
@@ -140,6 +141,7 @@ function TerminalPanel() {
           </For>
         </div>
         <button
+          data-testid="terminal-add-tab"
           class="px-2 h-full text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
           onClick={() => addTab()}
           title="New Terminal (Cmd+T)"

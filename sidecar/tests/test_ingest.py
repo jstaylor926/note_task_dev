@@ -126,6 +126,16 @@ def test_delete_embeddings_nonexistent(client):
     assert response.json()["status"] == "success"
 
 
+def test_delete_embeddings_rejects_invalid_filter(client):
+    response = client.delete(
+        "/embeddings",
+        params={"source_file": "foo.rs' OR 1=1 --"},
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["detail"]["error"]["code"] == "INVALID_FILTER"
+
+
 # --- Search filter tests ---
 
 
@@ -226,3 +236,14 @@ def test_search_no_filter_returns_all_languages(client):
     languages = {r["language"] for r in results}
     # With mock vectors all identical, we should get results from multiple languages
     assert len(languages) > 1
+
+
+def test_search_rejects_invalid_language_filter(client):
+    _ingest_test_files(client)
+    response = client.get(
+        "/search",
+        params={"query": "code", "limit": 5, "language": "rust' OR 1=1 --"},
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["detail"]["error"]["code"] == "INVALID_FILTER"

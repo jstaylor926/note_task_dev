@@ -117,7 +117,7 @@ function FileFinder(props: FileFinderProps) {
                       />
                     </div>
                     <div class={`text-[10px] truncate opacity-60 ${index() === selectedIndex() ? 'text-white' : 'text-[var(--color-text-secondary)]'}`}>
-                      {result.text.substring(0, result.text.lastIndexOf('/'))}
+                      {result.text}
                     </div>
                   </div>
                 </div>

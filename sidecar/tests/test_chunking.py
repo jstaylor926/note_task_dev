@@ -180,6 +180,27 @@ class MyComponent {
     assert "MyComponent" in names
 
 
+def test_chunk_tsx_component():
+    source = """\
+import React from 'react';
+
+function Button(props: { label: string }) {
+  return <button>{props.label}</button>;
+}
+
+class Wrapper extends React.Component {
+  render() {
+    return <Button label="ok" />;
+  }
+}
+"""
+    chunks = chunk_code(source, "tsx", file_path="Button.tsx")
+    assert chunks is not None
+    names = [c.entity_name for c in chunks if c.entity_name]
+    assert "Button" in names
+    assert "Wrapper" in names
+
+
 def test_chunk_code_unsupported_language():
     result = chunk_code("hello", "haskell", file_path="main.hs")
     assert result is None

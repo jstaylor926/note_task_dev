@@ -246,6 +246,52 @@ CREATE TABLE IF NOT EXISTS app_config (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS llm_runs (
+    id TEXT PRIMARY KEY,
+    workspace_profile_id TEXT REFERENCES workspace_profiles(id) ON DELETE SET NULL,
+    provider TEXT,
+    model TEXT NOT NULL,
+    request_kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    latency_ms INTEGER,
+    token_count_input INTEGER,
+    token_count_output INTEGER,
+    cost_usd REAL,
+    trace_id TEXT,
+    metadata_json TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_runs_profile ON llm_runs(workspace_profile_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_llm_runs_trace ON llm_runs(trace_id);
+
+CREATE TABLE IF NOT EXISTS retrieval_feedback (
+    id TEXT PRIMARY KEY,
+    workspace_profile_id TEXT REFERENCES workspace_profiles(id) ON DELETE SET NULL,
+    query TEXT NOT NULL,
+    selected_result_id TEXT,
+    selected_result_type TEXT,
+    relevance_label TEXT,
+    trace_id TEXT,
+    metadata_json TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_retrieval_feedback_profile ON retrieval_feedback(workspace_profile_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_retrieval_feedback_trace ON retrieval_feedback(trace_id);
+
+CREATE TABLE IF NOT EXISTS app_audit_log (
+    id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    actor TEXT,
+    trace_id TEXT,
+    details_json TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_event_type ON app_audit_log(event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_trace ON app_audit_log(trace_id);
+
 CREATE TABLE IF NOT EXISTS paired_devices (
     id TEXT PRIMARY KEY,
     device_name TEXT NOT NULL,
@@ -313,6 +359,15 @@ pub fn initialize(db_path: &Path) -> Result<Connection> {
         )?;
     }
 
+    let current_version: i64 =
+        conn.query_row("SELECT MAX(version) FROM schema_version", [], |row| row.get(0))?;
+    if current_version < 2 {
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (2, 'add llm_runs, retrieval_feedback, app_audit_log')",
+            [],
+        )?;
+    }
+
     // Insert default workspace profile if none exists
     let profile_count: i64 =
         conn.query_row("SELECT COUNT(*) FROM workspace_profiles", [], |row| {
@@ -375,7 +430,15 @@ pub fn get_active_profile_watched_directories(conn: &Connection) -> Result<Optio
     match rows.next()? {
         Some(row) => {
             let json_str: String = row.get(0)?;
-            let dirs: Vec<String> = serde_json::from_str(&json_str).unwrap_or_default();
+            let dirs: Vec<String> = match serde_json::from_str(&json_str) {
+                Ok(parsed) => parsed,
+                Err(_) => json_str
+                    .lines()
+                    .map(|line| line.trim())
+                    .filter(|line| !line.is_empty())
+                    .map(|line| line.to_string())
+                    .collect(),
+            };
             Ok(Some(dirs))
         }
         None => Ok(None),
@@ -660,6 +723,7 @@ pub fn list_tasks(conn: &Connection, profile_id: &str, status_filter: Option<&st
 }
 
 /// Update a task's fields. Sets completed_at when status='done'. Returns true if updated.
+#[allow(clippy::too_many_arguments)]
 pub fn update_task(
     conn: &Connection,
     id: &str,
@@ -1293,7 +1357,14 @@ pub fn insert_paired_device(
     platform: Option<&str>,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO paired_devices (id, device_name, token_hash, platform) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO paired_devices (id, device_name, token_hash, platform, revoked, paired_at)
+         VALUES (?1, ?2, ?3, ?4, 0, CURRENT_TIMESTAMP)
+         ON CONFLICT(id) DO UPDATE SET
+            device_name = excluded.device_name,
+            token_hash = excluded.token_hash,
+            platform = excluded.platform,
+            revoked = 0,
+            paired_at = CURRENT_TIMESTAMP",
         params![device_id, device_name, token_hash, platform],
     )?;
     Ok(())
@@ -1359,18 +1430,36 @@ pub fn search_entities_fts(
     profile_id: &str,
     limit: usize,
 ) -> Result<Vec<EntitySearchResult>> {
-    let mut sql = "SELECT e.id, e.entity_type, e.title, e.content, e.source_file, e.updated_at
-                   FROM fts_search f
-                   JOIN entities e ON f.entity_id = e.id
-                   WHERE fts_search MATCH ?1 AND e.workspace_profile_id = ?2".to_string();
-    
     if let Some(t) = entity_type {
-        sql.push_str(&format!(" AND e.entity_type = '{}'", t));
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.entity_type, e.title, e.content, e.source_file, e.updated_at
+             FROM fts_search f
+             JOIN entities e ON f.entity_id = e.id
+             WHERE fts_search MATCH ?1
+               AND e.workspace_profile_id = ?2
+               AND e.entity_type = ?3
+             ORDER BY rank LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(params![query, profile_id, t, limit as i64], |row| {
+            Ok(EntitySearchResult {
+                id: row.get(0)?,
+                entity_type: row.get(1)?,
+                title: row.get(2)?,
+                content: row.get(3)?,
+                source_file: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })?;
+        return rows.collect();
     }
-    
-    sql.push_str(" ORDER BY rank LIMIT ?3");
 
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = conn.prepare(
+        "SELECT e.id, e.entity_type, e.title, e.content, e.source_file, e.updated_at
+         FROM fts_search f
+         JOIN entities e ON f.entity_id = e.id
+         WHERE fts_search MATCH ?1 AND e.workspace_profile_id = ?2
+         ORDER BY rank LIMIT ?3",
+    )?;
     let rows = stmt.query_map(params![query, profile_id, limit as i64], |row| {
         Ok(EntitySearchResult {
             id: row.get(0)?,
@@ -1402,6 +1491,93 @@ pub fn set_app_config(conn: &Connection, key: &str, value: &str) -> Result<()> {
         params![key, value],
     )?;
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn insert_llm_run(
+    conn: &Connection,
+    workspace_profile_id: Option<&str>,
+    provider: Option<&str>,
+    model: &str,
+    request_kind: &str,
+    status: &str,
+    latency_ms: Option<i64>,
+    token_count_input: Option<i64>,
+    token_count_output: Option<i64>,
+    cost_usd: Option<f64>,
+    trace_id: Option<&str>,
+    metadata_json: Option<&str>,
+) -> Result<String> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO llm_runs (
+            id, workspace_profile_id, provider, model, request_kind, status,
+            latency_ms, token_count_input, token_count_output, cost_usd, trace_id, metadata_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            id,
+            workspace_profile_id,
+            provider,
+            model,
+            request_kind,
+            status,
+            latency_ms,
+            token_count_input,
+            token_count_output,
+            cost_usd,
+            trace_id,
+            metadata_json,
+        ],
+    )?;
+    Ok(id)
+}
+
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub fn insert_retrieval_feedback(
+    conn: &Connection,
+    workspace_profile_id: Option<&str>,
+    query: &str,
+    selected_result_id: Option<&str>,
+    selected_result_type: Option<&str>,
+    relevance_label: Option<&str>,
+    trace_id: Option<&str>,
+    metadata_json: Option<&str>,
+) -> Result<String> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO retrieval_feedback (
+            id, workspace_profile_id, query, selected_result_id, selected_result_type,
+            relevance_label, trace_id, metadata_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            id,
+            workspace_profile_id,
+            query,
+            selected_result_id,
+            selected_result_type,
+            relevance_label,
+            trace_id,
+            metadata_json,
+        ],
+    )?;
+    Ok(id)
+}
+
+pub fn insert_app_audit_log(
+    conn: &Connection,
+    event_type: &str,
+    actor: Option<&str>,
+    trace_id: Option<&str>,
+    details_json: Option<&str>,
+) -> Result<String> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO app_audit_log (id, event_type, actor, trace_id, details_json)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, event_type, actor, trace_id, details_json],
+    )?;
+    Ok(id)
 }
 
 // ─── Editor Layout ───────────────────────────────────────────────────
@@ -1461,6 +1637,55 @@ mod tests {
         let conn = initialize(Path::new(":memory:")).unwrap();
         let profile_id = get_active_profile_id(&conn).unwrap();
         assert!(profile_id.is_some());
+    }
+
+    #[test]
+    fn test_get_active_profile_watched_directories_parses_json_and_lines() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let profile_id = get_active_profile_id(&conn).unwrap().unwrap();
+
+        conn.execute(
+            "UPDATE workspace_profiles SET watched_directories = ?1 WHERE id = ?2",
+            params![r#"["/tmp/a","/tmp/b"]"#, profile_id],
+        )
+        .unwrap();
+        let dirs = get_active_profile_watched_directories(&conn)
+            .unwrap()
+            .unwrap();
+        assert_eq!(dirs, vec!["/tmp/a".to_string(), "/tmp/b".to_string()]);
+
+        conn.execute(
+            "UPDATE workspace_profiles SET watched_directories = ?1 WHERE id = ?2",
+            params!["/tmp/c\n/tmp/d", profile_id],
+        )
+        .unwrap();
+        let dirs = get_active_profile_watched_directories(&conn)
+            .unwrap()
+            .unwrap();
+        assert_eq!(dirs, vec!["/tmp/c".to_string(), "/tmp/d".to_string()]);
+    }
+
+    #[test]
+    fn test_insert_app_audit_log() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        let id = insert_app_audit_log(
+            &conn,
+            "remote_access.enabled",
+            Some("system"),
+            Some("trace-1"),
+            Some(r#"{"enabled":true}"#),
+        )
+        .unwrap();
+        assert!(!id.is_empty());
+
+        let event_type: String = conn
+            .query_row(
+                "SELECT event_type FROM app_audit_log WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(event_type, "remote_access.enabled");
     }
 
     #[test]
@@ -2089,7 +2314,7 @@ mod tests {
         // Create contains_task link from note to task
         create_entity_link(&conn, &note.id, &task.id, "contains_task", true, None).unwrap();
 
-        let lineages = get_task_lineages(&conn, &[task.id.clone()]).unwrap();
+        let lineages = get_task_lineages(&conn, std::slice::from_ref(&task.id)).unwrap();
         assert_eq!(lineages.len(), 1);
         assert_eq!(lineages[0].task_id, task.id);
         assert_eq!(lineages[0].source_entity_id, note.id);
@@ -2103,7 +2328,7 @@ mod tests {
         let pid = get_active_profile_id(&conn).unwrap().unwrap();
         let task = create_task(&conn, "Manual task", None, "medium", &pid, None).unwrap();
 
-        let lineages = get_task_lineages(&conn, &[task.id.clone()]).unwrap();
+        let lineages = get_task_lineages(&conn, std::slice::from_ref(&task.id)).unwrap();
         assert!(lineages.is_empty());
     }
 

@@ -1,5 +1,5 @@
 import { onMount, onCleanup, createSignal, Show } from 'solid-js';
-import EditorPanel, { editorStore, handleOpenFile } from '../components/EditorPanel';
+import EditorPanel, { handleOpenFile } from '../components/EditorPanel';
 import TerminalPanel from '../components/TerminalPanel';
 import FileTree from '../components/FileTree';
 import TaskPanel from '../components/TaskPanel';
@@ -83,7 +83,7 @@ function WorkspaceLayout() {
     } else if (result.result_type === 'action') {
       const metadata = result.metadata as any;
       if (metadata?.type === 'create-task') {
-        taskStore.createTask(metadata.query, '', 'medium');
+        taskStore.createTask(metadata.query, 'medium');
       }
     } else if (result.source_file) {
       handleOpenFile(result.source_file);

@@ -3,16 +3,45 @@ import json
 import asyncio
 import sys
 import os
+import re
+import shutil
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, Body, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import litellm
-from datetime import datetime
 
 logger = logging.getLogger("cortex-sidecar")
 
 router = APIRouter(prefix="/api/v1")
+
+SAFE_FILTER_VALUE_RE = re.compile(r"^[A-Za-z0-9_./:\\\- ]+$")
+
+
+def sanitize_filter_value(field: str, value: str) -> str:
+    if not value:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "code": "INVALID_FILTER",
+                    "message": f"{field} cannot be empty",
+                    "retryable": False,
+                }
+            },
+        )
+    if not SAFE_FILTER_VALUE_RE.fullmatch(value):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "code": "INVALID_FILTER",
+                    "message": f"{field} contains unsupported characters",
+                    "retryable": False,
+                }
+            },
+        )
+    return value.replace("'", "''")
 
 class Message(BaseModel):
     role: str # system, user, assistant
@@ -24,11 +53,22 @@ class ChatRequest(BaseModel):
     stream: bool = False
     temperature: float = 0.7
     max_tokens: Optional[int] = None
+    context_strategy: str = "none"
+    context: Optional[Dict[str, Any]] = None
     metadata: Optional[Dict[str, Any]] = None
 
 class SynthesisRequest(BaseModel):
     raw_signals: Dict[str, Any]
     model: str = "ollama/llama3"
+
+class RagQueryRequest(BaseModel):
+    query: str
+    limit: int = 10
+    mode: str = "hybrid"  # vector | hybrid
+    rerank: bool = False
+    source_types: Optional[List[str]] = None
+    file_path_prefix: Optional[str] = None
+    git_branch: Optional[str] = None
 
 class TerminalTranslateRequest(BaseModel):
     query: str
@@ -94,13 +134,151 @@ async def chat_endpoint(req: ChatRequest):
         return response
     except Exception as e:
         logger.error(f"Chat error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": {
+                    "code": "CHAT_PROVIDER_ERROR",
+                    "message": str(e),
+                    "retryable": True,
+                }
+            },
+        )
+
+@router.get("/models")
+async def list_models():
+    """List effective model availability for routing diagnostics."""
+    models: List[Dict[str, Any]] = []
+
+    if shutil.which("ollama"):
+        models.append(
+            {
+                "id": "ollama/llama3",
+                "provider": "ollama",
+                "availability": "available",
+                "local": True,
+                "default": True,
+            }
+        )
+    else:
+        models.append(
+            {
+                "id": "ollama/llama3",
+                "provider": "ollama",
+                "availability": "unavailable",
+                "local": True,
+                "default": True,
+            }
+        )
+
+    if os.environ.get("OPENAI_API_KEY"):
+        models.append(
+            {
+                "id": "openai/gpt-4.1-mini",
+                "provider": "openai",
+                "availability": "available",
+                "local": False,
+                "default": False,
+            }
+        )
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        models.append(
+            {
+                "id": "anthropic/claude-3-5-sonnet-latest",
+                "provider": "anthropic",
+                "availability": "available",
+                "local": False,
+                "default": False,
+            }
+        )
+
+    return {"default_model": "ollama/llama3", "models": models}
+
+@router.post("/rag/query")
+async def rag_query(req: RagQueryRequest, request: Request):
+    """Hybrid retrieval endpoint with optional lightweight rerank."""
+    if not req.query.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "code": "INVALID_QUERY",
+                    "message": "query cannot be empty",
+                    "retryable": False,
+                }
+            },
+        )
+
+    table = request.app.state.lancedb.open_table("embeddings")
+    if request.app.state.model:
+        vector = request.app.state.model.encode(req.query).tolist()
+    else:
+        vector = [0.1] * 384
+
+    conditions: List[str] = []
+    if req.source_types:
+        safe_types = [sanitize_filter_value("source_type", st) for st in req.source_types]
+        joined = ", ".join([f"'{t}'" for t in safe_types])
+        conditions.append(f"source_type IN ({joined})")
+    if req.file_path_prefix:
+        prefix = sanitize_filter_value("file_path_prefix", req.file_path_prefix)
+        conditions.append(f"source_file LIKE '{prefix}%'")
+    if req.git_branch:
+        branch = sanitize_filter_value("git_branch", req.git_branch)
+        conditions.append(f"git_branch = '{branch}'")
+
+    search = table.search(vector).limit(max(1, min(req.limit, 100)))
+    if conditions:
+        search = search.where(" AND ".join(conditions))
+
+    raw_results = search.to_list()
+    query_tokens = {t.lower() for t in req.query.split() if t.strip()}
+    enriched: List[Dict[str, Any]] = []
+
+    for row in raw_results:
+        distance = row.pop("_distance", None)
+        row.pop("vector", None)
+        vector_score = round(max(0.0, 1.0 - distance), 4) if distance is not None else 0.0
+
+        text = row.get("text", "") or ""
+        token_hits = sum(1 for token in query_tokens if token in text.lower())
+        lexical_score = (token_hits / max(len(query_tokens), 1)) if query_tokens else 0.0
+
+        if req.mode == "hybrid":
+            final_score = round((vector_score * 0.7) + (lexical_score * 0.3), 4)
+        else:
+            final_score = vector_score
+
+        row["vector_score"] = vector_score
+        row["lexical_score"] = round(lexical_score, 4)
+        row["relevance_score"] = final_score
+        enriched.append(row)
+
+    enriched.sort(key=lambda r: r.get("relevance_score", 0.0), reverse=True)
+    if req.rerank:
+        # Lightweight rerank heuristic: prioritize exact symbol/path hits.
+        query_lower = req.query.lower()
+        enriched.sort(
+            key=lambda r: (
+                query_lower in (r.get("entity_name") or "").lower(),
+                query_lower in (r.get("source_file") or "").lower(),
+                r.get("relevance_score", 0.0),
+            ),
+            reverse=True,
+        )
+
+    return {
+        "query": req.query,
+        "mode": req.mode,
+        "rerank": req.rerank,
+        "results": enriched[: req.limit],
+    }
 
 @router.post("/session/synthesis")
 async def session_synthesis(req: SynthesisRequest):
     """Synthesize raw signals into a session summary, blockers, and next steps."""
     
-    system_prompt = """You are the Cortex Session Synthesizer. 
+    system_prompt = """You are the Cortex Session Synthesizer.
 Your task is to analyze raw activity signals from a developer's workspace and provide a structured summary.
 Signals include recent file edits, git status, terminal activity, notes, and tasks.
 
@@ -109,6 +287,8 @@ Output a JSON object with the following fields:
 2. "blockers": A list of identified obstacles or errors.
 3. "next_steps": A list of immediate actions for the next session.
 4. "active_context": A short summary of the core mental state.
+5. "confidence": A float from 0.0 to 1.0.
+6. "provenance": A list of concise source hints from raw_signals used for the summary.
 
 Be technical, objective, and concise.
 """
@@ -128,15 +308,27 @@ Be technical, objective, and concise.
             response_format={ "type": "json_object" }
         )
         content = response.choices[0].message.content
-        return json.loads(content)
+        parsed = json.loads(content)
+        return {
+            "summary": parsed.get("summary", "No summary available."),
+            "blockers": parsed.get("blockers", []),
+            "next_steps": parsed.get("next_steps", []),
+            "active_context": parsed.get("active_context", "Unknown"),
+            "confidence": float(parsed.get("confidence", 0.5)),
+            "provenance": parsed.get("provenance", []),
+            "source": "llm",
+        }
     except Exception as e:
         logger.error(f"Synthesis error: {e}")
         # Rule-based fallback
         return {
-            "summary": "Session synthesis failed, using rule-based fallback.",
-            "blockers": ["Synthesis error: " + str(e)],
-            "next_steps": ["Check LLM connectivity (Ollama)"],
-            "active_context": "Unknown"
+            "summary": "Session synthesis unavailable. Generated a deterministic fallback summary.",
+            "blockers": ["Synthesis provider unavailable"],
+            "next_steps": ["Review recent tasks and terminal failures"],
+            "active_context": "Fallback mode",
+            "confidence": 0.2,
+            "provenance": ["fallback:raw_signals"],
+            "source": "fallback",
         }
 
 @router.post("/terminal/translate")

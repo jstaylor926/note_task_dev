@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.19.0
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync sidecar dependencies
+        run: cd sidecar && uv sync --extra dev
+
+      - name: Typecheck frontend
+        run: pnpm typecheck
+
+      - name: Test frontend
+        run: pnpm test
+
+      - name: Test Rust
+        run: cd src-tauri && cargo test
+
+      - name: Lint Rust
+        run: cd src-tauri && cargo clippy --all-targets -- -D warnings
+
+      - name: Test sidecar
+        run: cd sidecar && CORTEX_TEST_MODE=1 uv run pytest
+
+      - name: Lint sidecar
+        run: cd sidecar && uv run ruff check cortex_sidecar tests --select E9,F63,F7,F82
+
+      - name: Typecheck sidecar
+        run: cd sidecar && uv run mypy cortex_sidecar --ignore-missing-imports

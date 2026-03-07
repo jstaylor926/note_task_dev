@@ -97,6 +97,7 @@ pub fn task_list(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn task_update(
     id: String,
     title: String,
@@ -372,7 +373,7 @@ pub async fn extract_tasks_from_terminal(
             if let Ok(task) = db::create_task(
                 &conn,
                 &tt.text,
-                Some(&tt.source_text),
+                Some(&format!("[{} | confidence {:.2}] {}", tt.error_type, tt.confidence, tt.source_text)),
                 "medium",
                 &profile_id,
                 Some("terminal"),
