@@ -17,4 +17,7 @@ Productionize Cortex for private beta in 90 days with local-first hybrid AI, SMB
 ## Documents
 - [Specification](./spec.md)
 - [Implementation Plan](./plan.md)
+- [Beta Release Checklist](./release_checklist_beta.md)
+- [Private Beta Onboarding Workflow](./private_beta_onboarding.md)
+- [Stabilization Sprint Playbook](./stabilization_sprint_playbook.md)
 - [Metadata](./metadata.json)

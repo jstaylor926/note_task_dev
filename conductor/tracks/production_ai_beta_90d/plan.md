@@ -41,7 +41,18 @@
 - [~] Add retrieval eval harness and golden quality benchmark automation.
 
 ## Phase 5: Beta Readiness
-- [ ] Define release checklist and cut controlled `beta` channel build.
-- [ ] Private beta onboarding workflow (20-100 users).
+- [~] Define release checklist and cut controlled `beta` channel build (checklist drafted in `release_checklist_beta.md`; build cut pending).
+- [~] Private beta onboarding workflow (20-100 users) drafted in `private_beta_onboarding.md`; execution pending.
 - [x] In-app feedback capture tied to trace IDs (SearchPanel now submits per-result feedback with search trace IDs).
-- [ ] Two-week stabilization sprint process for crashers and AI regressions.
+- [~] Two-week stabilization sprint process for crashers and AI regressions drafted in `stabilization_sprint_playbook.md`; execution pending.
+
+## Next Pending Items (Ordered Queue)
+1. [ ] Phase 4: complete true incremental chat streaming in the UI via event-driven token updates.
+2. [ ] Phase 4: implement retrieval/session quality evaluation harness automation and CI reporting.
+3. [ ] Phase 3: finish sidecar binary packaging in release jobs (not artifact-only CI).
+4. [ ] Phase 3: finalize signed updater/release pipeline for all supported platforms.
+5. [ ] Phase 3: complete migration versioning hardening with rollback-safe startup checks.
+6. [ ] Phase 2: finish structured IPC/sidecar error taxonomy coverage across remaining command surfaces.
+7. [ ] Phase 5: execute `release_checklist_beta.md` and cut first controlled `beta` channel build.
+8. [ ] Phase 5: execute `private_beta_onboarding.md` and onboard first cohort.
+9. [ ] Phase 5: execute `stabilization_sprint_playbook.md` for the first 2-week beta stabilization window.
