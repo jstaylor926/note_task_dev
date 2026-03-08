@@ -89,6 +89,16 @@ pub struct ChatMessageRow {
     pub created_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppAuditLogRow {
+    pub id: String,
+    pub event_type: String,
+    pub actor: Option<String>,
+    pub trace_id: Option<String>,
+    pub details_json: Option<String>,
+    pub created_at: String,
+}
+
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY,
@@ -1580,6 +1590,29 @@ pub fn insert_app_audit_log(
     Ok(id)
 }
 
+pub fn list_recent_app_audit_logs(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<AppAuditLogRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, event_type, actor, trace_id, details_json, created_at
+         FROM app_audit_log
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit as i64], |row| {
+        Ok(AppAuditLogRow {
+            id: row.get(0)?,
+            event_type: row.get(1)?,
+            actor: row.get(2)?,
+            trace_id: row.get(3)?,
+            details_json: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
 // ─── Editor Layout ───────────────────────────────────────────────────
 
 /// Save the editor layout for the active workspace profile (upsert).
@@ -1686,6 +1719,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(event_type, "remote_access.enabled");
+    }
+
+    #[test]
+    fn test_list_recent_app_audit_logs() {
+        let conn = initialize(Path::new(":memory:")).unwrap();
+        insert_app_audit_log(&conn, "event.one", Some("a"), None, None).unwrap();
+        insert_app_audit_log(&conn, "event.two", Some("b"), None, None).unwrap();
+
+        let logs = list_recent_app_audit_logs(&conn, 1).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].event_type, "event.two");
     }
 
     #[test]

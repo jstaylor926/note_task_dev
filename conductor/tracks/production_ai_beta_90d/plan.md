@@ -29,7 +29,7 @@
 - [x] Add production launcher path for bundled sidecar executable with dev-mode `uv run` fallback.
 - [~] Build sidecar binary artifact per OS in CI and package in release jobs.
 - [~] Signed updater/release pipeline for Tauri artifacts.
-- [ ] Startup diagnostics panel and persistent log export UI.
+- [x] Startup diagnostics panel and persistent log export UI.
 - [~] SQLite schema migration versioning for new production tables.
 
 ## Phase 4: AI/ML/LLM Quality (Session Handoff First)
@@ -37,11 +37,22 @@
 - [x] Add sidecar session synthesis schema with confidence/provenance/source fields and deterministic fallback.
 - [x] Add `hybrid_search` and `/api/v1/rag/query` route with optional rerank mode.
 - [x] Add `model_list` + profile default-model update command.
-- [~] Add robust streaming chat transport (current version is compatibility chunking).
+- [~] Add robust streaming chat transport (Rust now consumes sidecar SSE with non-stream fallback; next step is true incremental UI streaming events).
 - [~] Add retrieval eval harness and golden quality benchmark automation.
 
 ## Phase 5: Beta Readiness
-- [ ] Define release checklist and cut controlled `beta` channel build.
-- [ ] Private beta onboarding workflow (20-100 users).
-- [ ] In-app feedback capture tied to trace IDs.
-- [ ] Two-week stabilization sprint process for crashers and AI regressions.
+- [~] Define release checklist and cut controlled `beta` channel build (checklist drafted in `release_checklist_beta.md`; build cut pending).
+- [~] Private beta onboarding workflow (20-100 users) drafted in `private_beta_onboarding.md`; execution pending.
+- [x] In-app feedback capture tied to trace IDs (SearchPanel now submits per-result feedback with search trace IDs).
+- [~] Two-week stabilization sprint process for crashers and AI regressions drafted in `stabilization_sprint_playbook.md`; execution pending.
+
+## Next Pending Items (Ordered Queue)
+1. [ ] Phase 4: complete true incremental chat streaming in the UI via event-driven token updates.
+2. [ ] Phase 4: implement retrieval/session quality evaluation harness automation and CI reporting.
+3. [ ] Phase 3: finish sidecar binary packaging in release jobs (not artifact-only CI).
+4. [ ] Phase 3: finalize signed updater/release pipeline for all supported platforms.
+5. [ ] Phase 3: complete migration versioning hardening with rollback-safe startup checks.
+6. [ ] Phase 2: finish structured IPC/sidecar error taxonomy coverage across remaining command surfaces.
+7. [ ] Phase 5: execute `release_checklist_beta.md` and cut first controlled `beta` channel build.
+8. [ ] Phase 5: execute `private_beta_onboarding.md` and onboard first cohort.
+9. [ ] Phase 5: execute `stabilization_sprint_playbook.md` for the first 2-week beta stabilization window.

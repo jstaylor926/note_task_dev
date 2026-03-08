@@ -31,8 +31,8 @@
 
 ### Quality Gates
 
-- Frontend tests: `216/216` passing (`pnpm test`)
-- Rust tests: `128/128` passing (`cd src-tauri && cargo test`)
+- Frontend tests: `221/221` passing (`pnpm test`)
+- Rust tests: `129/129` passing (`cd src-tauri && cargo test`)
 - Sidecar tests: `88/88` passing (`cd sidecar && CORTEX_TEST_MODE=1 uv run pytest`)
 - Rust lint gate passing: `cargo clippy --all-targets -- -D warnings`
 - Sidecar static checks passing:
@@ -55,6 +55,15 @@
 - Added sidecar executable build automation:
   - local script: `sidecar/scripts/build_sidecar_binary.py`
   - CI workflow: `.github/workflows/sidecar-binary.yml` (cross-OS artifact build)
+- Added startup diagnostics surface:
+  - `startup_diagnostics` and `diagnostics_export` Rust commands
+  - frontend `DiagnosticsPanel` with refresh/export controls
+- Added retrieval feedback capture end-to-end flow:
+  - `feedback_submit` Tauri command writes `retrieval_feedback` with optional `trace_id`
+  - `SearchPanel` now captures per-result helpful/not-helpful feedback tied to per-search trace IDs
+- Upgraded chat streaming transport:
+  - `chat_send_stream` now consumes real sidecar SSE chunks with non-stream fallback path
+  - `ChatPanel` now sends via the streaming API route instead of non-stream-only command
 
 ### Sidecar Launch Modes
 
